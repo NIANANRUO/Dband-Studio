@@ -273,11 +273,15 @@ class TestNoncollinearProjection:
             f.write("1 -1 2 0 1\n")
             f.writelines(rows)
 
-        energy, up, down, total, ef = parse_doscar_spin_all(doscar, "1", orbitals=["d"])
+        energy, up, down, total, ef, metadata = parse_doscar_spin_all(
+            doscar, "1", orbitals=["d"], return_metadata=True)
         np.testing.assert_allclose(energy, [-1.0, 1.0])
         np.testing.assert_allclose(total["d"], [4.0, 2.0])
         np.testing.assert_allclose(up["d"], [3.0, 0.5])
         np.testing.assert_allclose(down["d"], [1.0, 1.5])
+        assert metadata.mode == "noncollinear"
+        assert metadata.orbital_resolution == "l"
+        assert metadata.spin_axis == (0.0, 0.0, 1.0)
 
 
 class TestAggregateDResult:
@@ -290,6 +294,72 @@ class TestAggregateDResult:
             orb_centers={"d": -1.0}, orbital_resolution="l")
 
         assert result.is_aggregate_d is True
+
+    def test_csv_leaves_unresolved_d_components_blank_for_lorbit10(self):
+        from core.services.exporter import DataExporter
+        from models.results import DbandResult
+
+        tmp_dir = tempfile.mkdtemp(prefix="dband_export_lorbit10_")
+        output = os.path.join(tmp_dir, "result.csv")
+        DataExporter.export_results_csv([DbandResult(
+            label="LORBIT10", range_name="All", center=-1.2, width=0.8,
+            filling=50.0, orb_weights={"d": 100.0}, orb_centers={"d": -1.2},
+            orbital_resolution="l")], output)
+
+        with open(output, encoding="utf-8-sig", newline="") as f:
+            rows = list(__import__("csv").reader(f))
+        assert rows[1][5:10] == [""] * 5
+        assert rows[1][10:15] == [""] * 5
+
+
+class TestPDOSDisplaySelection:
+    def test_l_resolved_data_display_only_aggregate_d(self):
+        from ui.charts.pdos_chart import _display_d_orbitals
+
+        assert _display_d_orbitals({"d": np.array([1.0, 2.0])}) == ["d"]
+        assert _display_d_orbitals({"dxy": np.array([1.0, 2.0])}) == [
+            "dxy", "dyz", "dz2", "dxz", "dx2-y2"]
+
+    def test_multi_system_total_d_accepts_lorbit10_aggregate_channel(self):
+        from ui.charts.multi_pdos_chart import MultiPDOSChartWidget
+
+        result = MultiPDOSChartWidget._extract_dos(
+            None, {"d": np.array([1.0, 2.0])}, "Total d-DOS", 2)
+        np.testing.assert_allclose(result, [1.0, 2.0])
+
+
+class TestLegacyPDOSStyleFingerprint:
+    """New modes must not alter the existing PDOS visual contract."""
+
+    def test_nonspin_default_artist_style_is_preserved(self):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        from ui.charts.pdos_chart import PDOSChartWidget
+        from core.parsers.constants import d_orb_names
+
+        app = QApplication.instance() or QApplication([])
+        colors = {orb: f"#{i + 1:06d}" for i, orb in enumerate(d_orb_names)}
+        chart = PDOSChartWidget(colors)
+        energy = np.array([-1.0, 0.0, 1.0])
+        up = {orb: np.full(3, index + 1.0) for index, orb in enumerate(d_orb_names)}
+        chart.draw_pdos("legacy", {
+            "energy": energy, "ef": 0.0, "up": up,
+            "down": {orb: np.zeros(3) for orb in d_orb_names}, "has_spin": False,
+        })
+
+        ax = chart.fig.axes[0]
+        pdos_lines = ax.lines[:5]
+        assert [line.get_color() for line in pdos_lines] == [colors[orb] for orb in d_orb_names]
+        assert [line.get_linewidth() for line in pdos_lines] == [1.0] * 5
+        # Legacy non-spin cache still carries an all-zero down dictionary,
+        # so the established renderer creates five mirrored zero fills too.
+        assert len(ax.collections) == 10
+        assert all(collection.get_alpha() == pytest.approx(0.5) for collection in ax.collections)
+        assert ax.get_xlabel() == "E − E$_{f}$ (eV)"
+        assert ax.get_ylabel() == "DOS"
+        assert ax.lines[-2].get_linewidth() == pytest.approx(0.4)
+        assert ax.lines[-1].get_linestyle() == "--"
+        chart.deleteLater()
 
 
 class TestVasprunNoncollinearLayout:

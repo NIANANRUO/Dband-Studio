@@ -82,11 +82,12 @@ class ParamManagerPanel(QFrame):
         method_row = QHBoxLayout()
         method_row.addWidget(QLabel("Integration:"))
         self.combo_method = QComboBox()
-        self.combo_method.addItems(["Trapezoid (NumPy)", "Simpson (SciPy, VASPKIT)"])
+        self.combo_method.addItems(["Trapezoid (NumPy)", "Simpson (SciPy)"])
         self.combo_method.setCurrentIndex(0)  # Default: Trapezoid
         self.combo_method.setToolTip(
-            "Trapezoid: fast, NumPy only.  Simpson: higher accuracy, "
-            "matches VASPKit output, requires SciPy."
+            "Trapezoid: fast, NumPy only. Simpson: an independent higher-order "
+            "quadrature rule requiring SciPy. Different software may use different "
+            "grid-boundary and integration conventions."
         )
         method_row.addWidget(self.combo_method)
         method_row.addStretch()

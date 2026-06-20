@@ -24,6 +24,16 @@ from utils.helpers import format_orbital_display
 from ui.widgets.axes_config_dialog import AxesConfigDialog
 from ui.charts.pdos_chart_dialogs import PDOSDataDialog, PDOSStyleDialog
 
+
+def _display_d_orbitals(rho_dict):
+    """Return only d channels that are physically resolved by the source."""
+    aggregate = rho_dict.get("d") if rho_dict else None
+    if aggregate is not None:
+        values = np.asarray(aggregate, dtype=np.float64)
+        if values.ndim == 1 and np.isfinite(values).all() and np.any(values != 0):
+            return ["d"]
+    return list(d_orb_names)
+
 class PDOSChartWidget(QWidget):
     """Matplotlib-based PDOS chart widget with styling matching HybridizationWindow."""
     system_requested = Signal(str)
@@ -198,6 +208,8 @@ class PDOSChartWidget(QWidget):
         rho_up = cache_entry["up"]
         rho_dn = cache_entry["down"]
         has_spin = cache_entry["has_spin"]
+        metadata = cache_entry.get("metadata")
+        projected = getattr(metadata, "mode", None) == "noncollinear"
         
         mode = self.data_dlg.combo_plot_mode.currentText()
         if not has_spin:
@@ -219,10 +231,12 @@ class PDOSChartWidget(QWidget):
             ax_tot.set_title(f"{label} Total PDOS", fontsize=10, loc='left', pad=6)
             
             self._draw_spin(ax_up, e, rho_up, 1, "εd(up)", True)
-            ax_up.set_title("Spin-Up d-DOS", fontsize=10, loc='left', pad=6)
+            ax_up.set_title("SAXIS-Projected Up d-DOS" if projected else "Spin-Up d-DOS",
+                            fontsize=10, loc='left', pad=6)
             
             self._draw_spin(ax_dn, e, rho_dn, 1, "εd(dn)", True)
-            ax_dn.set_title("Spin-Down d-DOS", fontsize=10, loc='left', pad=6)
+            ax_dn.set_title("SAXIS-Projected Down d-DOS" if projected else "Spin-Down d-DOS",
+                            fontsize=10, loc='left', pad=6)
             
             # Set common x-label
             ax_dn.set_xlabel("E − E$_{f}$ (eV)")
@@ -244,7 +258,8 @@ class PDOSChartWidget(QWidget):
             ax = self.fig.add_subplot(111)
             self._axes = [ax]
             self._draw_spin(ax, e, rho_up, 1, "εd(up)", True)
-            ax.set_title(f"{label} Spin-Up PDOS", fontsize=10, loc='left', pad=6)
+            prefix = "SAXIS-Projected Up" if projected else "Spin-Up"
+            ax.set_title(f"{label} {prefix} PDOS", fontsize=10, loc='left', pad=6)
             ax.set_xlabel("E − E$_{f}$ (eV)")
             ax.set_ylabel("DOS")
             
@@ -252,7 +267,8 @@ class PDOSChartWidget(QWidget):
             ax = self.fig.add_subplot(111)
             self._axes = [ax]
             self._draw_spin(ax, e, rho_dn, 1, "εd(dn)", True)
-            ax.set_title(f"{label} Spin-Down PDOS", fontsize=10, loc='left', pad=6)
+            prefix = "SAXIS-Projected Down" if projected else "Spin-Down"
+            ax.set_title(f"{label} {prefix} PDOS", fontsize=10, loc='left', pad=6)
             ax.set_xlabel("E − E$_{f}$ (eV)")
             ax.set_ylabel("DOS")
             
@@ -376,7 +392,8 @@ class PDOSChartWidget(QWidget):
             
         if self.data_dlg.chk_show_center.isChecked():
             rho_tot = {}
-            for o in d_orb_names:
+            orbitals = _display_d_orbitals(rho_up)
+            for o in orbitals:
                 u = rho_up.get(o, np.zeros_like(e))
                 d = rho_dn.get(o, np.zeros_like(e)) if rho_dn else np.zeros_like(e)
                 rho_tot[o] = u + d
@@ -387,7 +404,8 @@ class PDOSChartWidget(QWidget):
         self._plot_orbital_lines(ax, e, rho_dict, spin_sign=sign, show_legend=show_legend)
         
         if self.data_dlg.chk_show_center.isChecked() and rho_dict is not None:
-            self._draw_center_annotation(ax, e, rho_dict, tag)
+            self._draw_center_annotation(
+                ax, e, rho_dict, tag, _display_d_orbitals(rho_dict))
             
     def _plot_orbital_lines(self, ax, e, rho_dict, spin_sign, show_legend):
         """Plot orbital lines with fill."""
@@ -395,23 +413,24 @@ class PDOSChartWidget(QWidget):
         do_fill = self.style_dlg.chk_fill.isChecked()
         alpha = self.style_dlg.spin_alpha.value()
         
-        for o in d_orb_names:
+        for o in _display_d_orbitals(rho_dict):
             dos = rho_dict.get(o, np.zeros_like(e)) * spin_sign
-            hex_color = self.orb_colors.get(o, "#000000")
+            hex_color = self.orb_colors.get(o, self.orb_colors.get("dxy", "#000000"))
             
             # Plot line
-            ax.plot(e, dos, color=hex_color, lw=lw, label=format_orbital_display(o) if show_legend else None)
+            label = "d-total" if o == "d" else format_orbital_display(o)
+            ax.plot(e, dos, color=hex_color, lw=lw, label=label if show_legend else None)
             
             # Fill if requested
             if do_fill:
                 ax.fill_between(e, 0, dos, color=hex_color, alpha=alpha, zorder=1)
                 
-    def _draw_center_annotation(self, ax, e, rho_dict, tag):
+    def _draw_center_annotation(self, ax, e, rho_dict, tag, orbitals=None):
         """Draw vertical line and annotation for d-band center."""
         limit_fermi, custom_range = self._parse_range_from_name()
         
         center, _, _, _ = calc_metrics(e, rho_dict, ef=0.0,
-                                        orb_names=d_orb_names,
+                                        orb_names=orbitals or _display_d_orbitals(rho_dict),
                                         limit_fermi=limit_fermi,
                                         custom_range=custom_range,
                                         method=self._integration_method)

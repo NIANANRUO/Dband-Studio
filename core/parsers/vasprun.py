@@ -8,13 +8,14 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from core.exceptions import DbandError
+from core.pdos_metadata import PDOSMetadata
 from core.parsers.common import (
     _ensure_pymatgen,
     _PYMATGEN_ORB_MAP,
     _resolve_atom_indices, _ensure_positive, _site_symbol,
 )
 from core.parsers.constants import _ORB_TYPE_TO_ORBITALS, all_orb_names
-from core.parsers.doscar import _project_noncollinear_spin
+from core.parsers.doscar import _nearby_saxis, _project_noncollinear_spin
 
 _logger = logging.getLogger("dband.parsers")
 
@@ -73,6 +74,16 @@ def _field_targets(field_name: str, target_orbs: List[str]) -> List[Tuple[str, f
             return [(name, 1.0)]
         return []
     return []
+
+
+def _vasprun_orbital_resolution(orb_fields: List[str]) -> str:
+    """Infer l versus lm resolution from declared vasprun.xml fields."""
+    names = {name.strip().lower() for name in orb_fields}
+    if names & {"dxy", "dyz", "dz2", "dxz", "x2-y2", "dx2", "dx2-y2"}:
+        return "lm"
+    if "d" in names:
+        return "l"
+    return "unknown"
 
 
 def _accumulate_vasprun_noncollinear(
@@ -266,6 +277,8 @@ def parse_vasprun_spin_all(
     filepath: str,
     atoms_str: str,
     orbitals: Optional[List[str]] = None,
+    *,
+    return_metadata: bool = False,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], float]:
     """Parse vasprun.xml once, returning (energy, rho_up, rho_dn, rho_total, ef).
     Uses lxml.etree.iterparse for high memory efficiency.
@@ -386,6 +399,16 @@ def parse_vasprun_spin_all(
     # Usually fields = ['energy', 's', 'py', 'pz', 'px', ...]
     orb_fields = fields[1:] if fields and fields[0].lower() == "energy" else fields
 
+    def finish(rho_up, rho_dn, rho_total, *, mode: str):
+        result = (energy, rho_up, rho_dn, rho_total, efermi)
+        if not return_metadata:
+            return result
+        return (*result, PDOSMetadata(
+            mode=mode,
+            orbital_resolution=_vasprun_orbital_resolution(orb_fields),
+            spin_axis=_nearby_saxis(filepath) if mode == "noncollinear" else None,
+            source_format="vasprun.xml"))
+
     if not orb_fields:
         raise DbandError(
             f"{filepath}: failed to collect <field> names from the "
@@ -422,8 +445,9 @@ def parse_vasprun_spin_all(
             raise DbandError(
                 f"{filepath}: noncollinear PDOS unexpectedly contains a second "
                 "collinear spin set; refusing an ambiguous interpretation.")
-        return (energy, *_accumulate_vasprun_noncollinear(
-            raw_arrays, list(target_indices), orb_fields, target_orbs), efermi)
+        return finish(*_accumulate_vasprun_noncollinear(
+            raw_arrays, list(target_indices), orb_fields, target_orbs),
+            mode="noncollinear")
 
     for idx in target_indices:
         arr_up = raw_arrays[idx]
@@ -445,7 +469,8 @@ def parse_vasprun_spin_all(
     rho_dn = _ensure_positive(rho_dn)
     rho_total = {o: rho_up[o] + rho_dn[o] for o in target_orbs}
     
-    return energy, rho_up, rho_dn, rho_total, efermi
+    return finish(rho_up, rho_dn, rho_total,
+                  mode="collinear" if any(rho_dn_raw[idx] for idx in target_indices) else "nonspin")
 
 
 def parse_vasprun(

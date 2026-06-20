@@ -10,9 +10,9 @@ Two integration methods are available, selected at call time via the
   NumPy 1.x).  First-order accurate, O(ΔE) per bin.  Fast and requires
   only NumPy.  This was the original method used in all prior versions.
 
-* **"simpson"** — ``scipy.integrate.simpson``.  Third-order accurate,
-  O(ΔE³) per bin.  Matches VASPKit task-287 output (which uses Simpson)
-  to within <1 % on typical VASP DOS grids.  Requires SciPy.
+* **"simpson"** — ``scipy.integrate.simpson``. A higher-order numerical
+  quadrature option. It is not asserted to reproduce any VASPKIT version.
+  Requires SciPy.
 
 The previous Numba JIT path was removed: for DOS-scale arrays (typically
 10³–10⁵ points) vectorised NumPy is already sub-millisecond, while Numba
@@ -317,7 +317,8 @@ def calc_metrics(
         limit_fermi: if True, integrate only below Ef.
         custom_range: ``(emin, emax)`` integration window (relative to Ef).
         method: integration method — ``"trapezoid"`` (default, NumPy only)
-                or ``"simpson"`` (requires SciPy; matches VASPKit).
+                or ``"simpson"`` (requires SciPy; an independent numerical
+                quadrature method that may differ from other software).
 
     Returns:
         ``(center, width, filling, orb_metrics)`` where ``orb_metrics`` is

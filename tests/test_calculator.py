@@ -34,6 +34,7 @@ def test_lorbit10_uses_one_aggregate_d_metric_channel():
 def test_calculation_worker_retains_lorbit10_as_aggregate_d_result():
     """The end-to-end worker must calculate d-total, not five zero channels."""
     from core.services.calculation_worker import CalculationWorker
+    from core.pdos_metadata import PDOSMetadata
 
     worker = CalculationWorker(
         [{"path": "synthetic/DOSCAR", "label": "LORBIT10"}], "DOSCAR", "1", "total",
@@ -45,8 +46,9 @@ def test_calculation_worker_retains_lorbit10_as_aggregate_d_result():
     zeros = {"d": np.zeros(2)}
 
     with mock.patch(
-        "core.services.calculation_worker.DataLoader.load_spin_all",
-        return_value=(energy, aggregate, zeros, aggregate, 0.0),
+        "core.services.calculation_worker.DataLoader.load_spin_all_with_metadata",
+        return_value=(energy, aggregate, zeros, aggregate, 0.0, PDOSMetadata(
+            mode="nonspin", orbital_resolution="l", spin_axis=None, source_format="DOSCAR")),
     ):
         worker.run()
 
@@ -56,6 +58,31 @@ def test_calculation_worker_retains_lorbit10_as_aggregate_d_result():
     assert results[0].is_aggregate_d is True
     assert results[0].orb_weights["d"] == pytest.approx(100.0)
     assert cache["LORBIT10"]["orbital_resolution"] == "l"
+
+
+def test_calculation_worker_keeps_noncollinear_saxis_metadata_in_cache():
+    """UI consumers need an explicit warning that up/down are projections."""
+    from core.services.calculation_worker import CalculationWorker
+    from core.pdos_metadata import PDOSMetadata
+
+    worker = CalculationWorker(
+        [{"path": "synthetic/DOSCAR", "label": "SOC"}], "DOSCAR", "1", "total",
+        True, False, False, (-10.0, 10.0))
+    completed = []
+    worker.calculation_done.connect(lambda results, cache: completed.append((results, cache)))
+    energy = np.array([-1.0, 1.0])
+    rho = {"dxy": np.array([1.0, 2.0])}
+    metadata = PDOSMetadata(
+        mode="noncollinear", orbital_resolution="lm", spin_axis=(0.0, 0.0, 1.0),
+        source_format="DOSCAR")
+
+    with mock.patch(
+        "core.services.calculation_worker.DataLoader.load_spin_all_with_metadata",
+        return_value=(energy, rho, rho, rho, 0.0, metadata),
+    ):
+        worker.run()
+
+    assert completed[0][1]["SOC"]["metadata"] == metadata
 
 
 # ── Fixtures ────────────────────────────────────────────────────────

@@ -86,7 +86,7 @@ class CalculationWorker(QThread):
                 # just them avoids parsing/allocating 11 unused s/p/f arrays
                 # (3× memory saving on large systems).
                 requested_orbitals = [*d_orb_names, "d"]
-                energy, rho_up, rho_dn, rho_total, ef = DataLoader.load_spin_all(
+                energy, rho_up, rho_dn, rho_total, ef, metadata = DataLoader.load_spin_all_with_metadata(
                     fp, current_atoms, orbitals=requested_orbitals)
                 # VASPKIT PDOS files never embed the Fermi level (ef forced to 0).
                 # Warn once per file so users know the energy axis is NOT aligned.
@@ -108,7 +108,7 @@ class CalculationWorker(QThread):
 
                 # Detect spin-polarisation by checking whether any orbital
                 # in the down channel carries non-zero DOS.
-                is_spin = _detect_has_spin(rho_dn)
+                is_spin = metadata.mode in {"collinear", "noncollinear"}
 
                 # Cache — store RAW energy + ef (not pre-aligned).
                 # ``filepath`` is recorded so HybridizationWorker can verify
@@ -124,6 +124,7 @@ class CalculationWorker(QThread):
                     "has_spin": is_spin,
                     "orbital_resolution": orbital_resolution,
                     "d_orbitals": metric_orbitals,
+                    "metadata": metadata,
                 }
 
                 ranges = []

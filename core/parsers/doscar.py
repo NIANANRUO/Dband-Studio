@@ -43,6 +43,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from core.exceptions import DbandError
+from core.pdos_metadata import PDOSMetadata
 from core.parsers.common import (
     _load_structure_near,
     _resolve_atom_indices,
@@ -104,6 +105,37 @@ def _nearby_noncollinear_hint(filepath: str) -> Optional[bool]:
     if values:
         return False
     return None
+
+
+def _nearby_saxis(filepath: str) -> Tuple[float, float, float]:
+    """Return VASP's normalized SAXIS, or its documented default (0,0,1)."""
+    directory = os.path.dirname(os.path.abspath(filepath)) or "."
+    for filename in ("vasprun.xml", "INCAR"):
+        candidate = os.path.join(directory, filename)
+        if not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8", errors="ignore") as fh:
+                for line_number, line in enumerate(fh):
+                    incar_match = re.match(r"^\s*SAXIS\s*=\s*(.*)$", line, flags=re.IGNORECASE)
+                    xml_match = re.search(r'name=["\']SAXIS["\'][^>]*>\s*([^<]+)', line, flags=re.IGNORECASE)
+                    match = incar_match or xml_match
+                    if match:
+                        try:
+                            values = np.asarray(match.group(1).split()[:3], dtype=np.float64)
+                        except ValueError as exc:
+                            raise DbandError(f"{candidate}: SAXIS is not three numeric values.") from exc
+                        if values.shape != (3,) or not np.isfinite(values).all():
+                            raise DbandError(f"{candidate}: SAXIS is not three finite values.")
+                        norm = np.linalg.norm(values)
+                        if norm == 0:
+                            raise DbandError(f"{candidate}: SAXIS must not be the zero vector.")
+                        return tuple((values / norm).tolist())
+                    if filename == "vasprun.xml" and line_number > 20000:
+                        break
+        except OSError:
+            continue
+    return (0.0, 0.0, 1.0)
 
 
 @dataclass(frozen=True)
@@ -416,6 +448,8 @@ def parse_doscar_spin_all(
     filepath: str,
     atoms_str: str,
     orbitals: Optional[List[str]] = None,
+    *,
+    return_metadata: bool = False,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], float]:
     """Parse DOSCAR -> (energy, rho_up, rho_dn, rho_total, efermi).
 
@@ -424,6 +458,15 @@ def parse_doscar_spin_all(
     """
     target_orbs = list(orbitals) if orbitals else list(all_orb_names)
     energy, _total, per_atom, efermi, is_spin = _read_doscar_raw(filepath)
+
+    def finish(rho_up, rho_dn, rho_total, *, mode: str, resolution: str):
+        result = (energy, rho_up, rho_dn, rho_total, efermi)
+        if not return_metadata:
+            return result
+        axis = _nearby_saxis(filepath) if mode == "noncollinear" else None
+        return (*result, PDOSMetadata(
+            mode=mode, orbital_resolution=resolution, spin_axis=axis,
+            source_format="DOSCAR"))
 
     struct = _load_structure_near(filepath)
     if struct is not None and len(struct) != len(per_atom):
@@ -460,7 +503,8 @@ def parse_doscar_spin_all(
             rho_up[orb] = up
             rho_dn[orb] = dn
             rho_total[orb] = total
-        return energy, rho_up, rho_dn, rho_total, efermi
+        return finish(rho_up, rho_dn, rho_total,
+                      mode="noncollinear", resolution=layout.orbital_resolution)
 
     up, dn = _accumulate(per_atom, is_spin, target_indices, target_orbs)
 
@@ -474,7 +518,9 @@ def parse_doscar_spin_all(
         rho_dn = {o: np.zeros_like(up[o]) for o in target_orbs}
         rho_total = {o: up[o] for o in target_orbs}
 
-    return energy, rho_up, rho_dn, rho_total, efermi
+    return finish(rho_up, rho_dn, rho_total,
+                  mode="collinear" if is_spin else "nonspin",
+                  resolution=layout.orbital_resolution if layout else "unknown")
 
 
 def parse_doscar(

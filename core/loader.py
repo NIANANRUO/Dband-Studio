@@ -22,6 +22,7 @@ import numpy as np
 
 from core import parsers
 from core.exceptions import FileTypeError, MissingProjectedDOSError
+from core.pdos_metadata import PDOSMetadata
 
 
 def _ensure_parsers():
@@ -110,6 +111,39 @@ class DataLoader:
                      + np.abs(rho_dn.get(o, np.zeros_like(energy)))
                      for o in (orbitals or parsers.all_orb_names)}
         return energy, rho_up, rho_dn, rho_total, ef
+
+    @classmethod
+    def load_spin_all_with_metadata(
+        cls,
+        filepath: str,
+        atoms: str,
+        orbitals: Optional[List[str]] = None,
+    ):
+        """Load all channels plus their physical interpretation.
+
+        ``load_spin_all`` deliberately retains its historical five-item tuple.
+        New callers that render or export spin labels must opt into this
+        metadata-carrying API so a noncollinear SAXIS projection cannot be
+        silently presented as a collinear spin channel.
+        """
+        _ensure_parsers()
+        ftype = cls.detect(filepath)
+        if ftype == "vasprun.xml":
+            return parsers.parse_vasprun_spin_all(
+                filepath, atoms, orbitals=orbitals, return_metadata=True)
+        if ftype == "DOSCAR":
+            return parsers.parse_doscar_spin_all(
+                filepath, atoms, orbitals=orbitals, return_metadata=True)
+
+        energy, rho_up, rho_dn, rho_total, ef = cls.load_spin_all(
+            filepath, atoms, orbitals=orbitals)
+        has_spin = any(np.any(np.asarray(values) != 0) for values in rho_dn.values())
+        return (energy, rho_up, rho_dn, rho_total, ef, PDOSMetadata(
+            mode="collinear" if has_spin else "nonspin",
+            orbital_resolution="lm",
+            spin_axis=None,
+            source_format=ftype,
+        ))
 
 
 # Register built-in parsers
