@@ -163,6 +163,40 @@ class TestParserInputValidation:
         assert key1 != key2
 
 
+class TestDOSCARPhysicalLayout:
+    """VASP projected-column layouts must be classified, never guessed."""
+
+    def test_classifies_lm_nonspin_layout(self):
+        from core.parsers.doscar import _classify_pdos_layout
+
+        layout = _classify_pdos_layout(9, total_is_spin=False)
+        assert layout.mode == "nonspin"
+        assert layout.orbital_resolution == "lm"
+        assert layout.components == ("total",)
+
+    def test_classifies_lm_collinear_layout(self):
+        from core.parsers.doscar import _classify_pdos_layout
+
+        layout = _classify_pdos_layout(18, total_is_spin=True)
+        assert layout.mode == "collinear"
+        assert layout.orbital_resolution == "lm"
+        assert layout.components == ("up", "down")
+
+    def test_classifies_lm_noncollinear_layout(self):
+        from core.parsers.doscar import _classify_pdos_layout
+
+        layout = _classify_pdos_layout(36, total_is_spin=False)
+        assert layout.mode == "noncollinear"
+        assert layout.orbital_resolution == "lm"
+        assert layout.components == ("total", "m1", "m2", "m3")
+
+    def test_rejects_unknown_projected_column_count(self):
+        from core.parsers.doscar import _classify_pdos_layout
+
+        with pytest.raises(DbandError, match="unsupported projected DOS layout"):
+            _classify_pdos_layout(7, total_is_spin=False)
+
+
 # ── Plugin system ───────────────────────────────────────────────────
 
 class TestPluginSystem:

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -56,6 +57,60 @@ _logger = logging.getLogger("dband.parsers")
 _LORBIT11_ORBS = s_orb_names + p_orb_names + d_orb_names + f_orb_names
 # LORBIT=10 (l-decomposed): s, p, d, f = 4 columns per channel.
 _LORBIT10_ORBS = ["s", "p", "d", "f"]
+
+
+@dataclass(frozen=True)
+class PDOSLayout:
+    """Physical interpretation of one DOSCAR site-projected data row."""
+
+    mode: str
+    orbital_resolution: str
+    orbitals: Tuple[str, ...]
+    components: Tuple[str, ...]
+
+
+def _classify_pdos_layout(n_cols: int, *, total_is_spin: bool) -> PDOSLayout:
+    """Classify VASP projected DOS columns without heuristic truncation.
+
+    ``n_cols`` excludes the leading energy column.  VASP emits one component
+    for non-spin data, interleaved up/down pairs for collinear data, and four
+    components (total, m1, m2, m3) for noncollinear data.
+    """
+    lm_counts = {1, 5, 9, len(_LORBIT11_ORBS)}
+    l_counts = {len(_LORBIT10_ORBS)}
+
+    if total_is_spin:
+        if n_cols % 2:
+            raise DbandError(
+                f"unsupported projected DOS layout: {n_cols} columns is not "
+                "an interleaved collinear pair layout.")
+        count = n_cols // 2
+        if count in lm_counts:
+            return PDOSLayout("collinear", "lm", tuple(_LORBIT11_ORBS[:count]),
+                              ("up", "down"))
+        if count in l_counts:
+            return PDOSLayout("collinear", "l", tuple(_LORBIT10_ORBS),
+                              ("up", "down"))
+    else:
+        if n_cols in lm_counts:
+            return PDOSLayout("nonspin", "lm", tuple(_LORBIT11_ORBS[:n_cols]),
+                              ("total",))
+        if n_cols in l_counts:
+            return PDOSLayout("nonspin", "l", tuple(_LORBIT10_ORBS),
+                              ("total",))
+        if n_cols % 4 == 0:
+            count = n_cols // 4
+            if count in lm_counts:
+                return PDOSLayout("noncollinear", "lm",
+                                  tuple(_LORBIT11_ORBS[:count]),
+                                  ("total", "m1", "m2", "m3"))
+            if count in l_counts:
+                return PDOSLayout("noncollinear", "l", tuple(_LORBIT10_ORBS),
+                                  ("total", "m1", "m2", "m3"))
+
+    raise DbandError(
+        f"unsupported projected DOS layout: {n_cols} columns; refusing to "
+        "guess orbital or spin-column mapping.")
 
 
 def _read_doscar_raw(filepath: str):
