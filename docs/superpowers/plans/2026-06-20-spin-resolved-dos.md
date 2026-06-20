@@ -73,8 +73,10 @@
 - Modify: `models/results.py`
 - Modify: `tests/test_calculator.py`
 
-- [ ] Write tests for provenance fields and removal of the unsupported “matches VASPKIT” label.
-- [ ] Implement mode/SAXIS labels, compatible channel choices, and CSV metadata fields without removing existing controls.
+- [ ] Write tests for provenance fields, removal of the unsupported “matches VASPKIT” label, and exact preservation of existing chart setting defaults.
+- [ ] Add a deterministic chart regression fixture for current non-spin and collinear plots. Assert artist labels, line styles, colors, alpha, axes labels, legend settings, center-line style, and export dimensions before introducing new channels.
+- [ ] Implement mode/SAXIS labels, compatible channel choices, and CSV metadata fields without removing, renaming, reordering, or changing defaults of existing controls.
+- [ ] Route noncollinear/LORBIT=10 data through the existing chart-style and theme code; add only new optional channel entries.
 - [ ] Run full `python -m pytest -q`; expect all tests pass.
 - [ ] Commit: `git commit -am "feat: expose DOS provenance and spin modes"`.
 

@@ -22,6 +22,12 @@
 - `LORBIT=10` 新增总 `d` 通道；它不伪造 dxy/dyz/dz2/dxz/dx2-y2 分解，UI/导出显示 `d-total`。
 - VASPKIT、DOSCAR、vasprun.xml 的既有入口继续保留。
 
+## Plot-style compatibility (non-negotiable)
+
+本次不重写、不替换、不删减 `ui/charts/`、`utils/styling.py`、主题 JSON 或任何已有绘图控件。对原有非自旋与共线自旋数据，新增数据模型必须走原绘图数据入口，因此同一输入、同一用户设置下，线型、颜色、透明度、坐标轴、中心标线、字体、图例、镜像自旋显示、注释位置、导出格式和导出尺寸保持不变。
+
+非共线/SOC 只新增可选数据通道；它不得改变默认选择或覆盖已保存的绘图设置。LORBIT=10 仅以 `d-total` 作为附加曲线标签，沿用现有主题和样式解析。
+
 ## Data contract
 
 解析器内部新增 `PDOSMetadata`：`mode`、`orbital_resolution`、`spin_axis`、`magnetization`、`source_format`。所有数组必须与能量轴等长、有限且能量严格递增。积分窗口端点通过线性插值加入数组。
@@ -39,3 +45,4 @@
 3. LORBIT=10 正确给出总 d 带中心，且不出现伪造的五分量权重。
 4. 非法网格、缺失 partner、列数不符合物理格式均失败且错误信息说明原因。
 5. 全部现有测试与新增回归测试通过。
+6. 现有绘图模式的 artist/style fingerprint 与导出图基线一致；非共线新增通道不改变原控制项的默认状态。
