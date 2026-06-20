@@ -15,6 +15,7 @@ env/
 .idea/
 .vscode/
 .workbuddy/
+.worktrees/
 
 # Packaging output
 build/
