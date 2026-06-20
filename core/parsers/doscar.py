@@ -113,6 +113,49 @@ def _classify_pdos_layout(n_cols: int, *, total_is_spin: bool) -> PDOSLayout:
         "guess orbital or spin-column mapping.")
 
 
+def _project_noncollinear_spin(
+    total: np.ndarray, m3: np.ndarray, *, tolerance: float = 1e-8,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Project noncollinear DOS onto VASP's sigma-3 (SAXIS) direction."""
+    total = np.asarray(total, dtype=np.float64)
+    m3 = np.asarray(m3, dtype=np.float64)
+    if total.shape != m3.shape or not np.isfinite(total).all() or not np.isfinite(m3).all():
+        raise DbandError("Noncollinear total DOS and m3 must be finite, matching arrays.")
+    if np.any(total < -tolerance) or np.any(np.abs(m3) > total + tolerance):
+        raise DbandError("Noncollinear magnetization density exceeds total DOS.")
+    total = np.maximum(total, 0.0)
+    return (total + m3) * 0.5, (total - m3) * 0.5
+
+
+def _accumulate_noncollinear(
+    per_atom: List[np.ndarray], target_indices: List[int], target_orbs: List[str],
+) -> Dict[str, Dict[str, np.ndarray]]:
+    """Sum total/m1/m2/m3 PDOS over selected atoms before spin projection."""
+    if not per_atom:
+        raise DbandError("No site-projected DOS blocks available.")
+    n_energy = per_atom[0].shape[0]
+    result = {
+        component: {orb: np.zeros(n_energy, dtype=np.float64) for orb in target_orbs}
+        for component in ("total", "m1", "m2", "m3")
+    }
+    for idx in target_indices:
+        if not 0 <= idx < len(per_atom):
+            raise DbandError(f"Selected atom index {idx + 1} is outside DOSCAR PDOS blocks.")
+        arr = per_atom[idx]
+        if arr.shape[0] != n_energy:
+            raise DbandError("DOSCAR atom PDOS blocks have inconsistent energy lengths.")
+        layout = _classify_pdos_layout(arr.shape[1], total_is_spin=False)
+        if layout.mode != "noncollinear":
+            raise DbandError("Expected noncollinear total/m1/m2/m3 projected DOS layout.")
+        for orb in target_orbs:
+            if orb not in layout.orbitals:
+                continue
+            column = layout.orbitals.index(orb) * 4
+            for offset, component in enumerate(layout.components):
+                result[component][orb] += arr[:, column + offset]
+    return result
+
+
 def _read_doscar_raw(filepath: str):
     """Parse a DOSCAR into (energy, total_dos, per_atom_dos, efermi, is_spin).
 
@@ -318,6 +361,22 @@ def parse_doscar_spin_all(
     else:
         # No structure file: only numeric indices are meaningful.
         target_indices = _resolve_numeric_indices(atoms_str, len(per_atom))
+
+    layout = (_classify_pdos_layout(per_atom[0].shape[1], total_is_spin=is_spin)
+              if per_atom else None)
+
+    if layout is not None and layout.mode == "noncollinear":
+        components = _accumulate_noncollinear(per_atom, target_indices, target_orbs)
+        rho_up = {}
+        rho_dn = {}
+        rho_total = {}
+        for orb in target_orbs:
+            total = components["total"][orb]
+            up, dn = _project_noncollinear_spin(total, components["m3"][orb])
+            rho_up[orb] = up
+            rho_dn[orb] = dn
+            rho_total[orb] = total
+        return energy, rho_up, rho_dn, rho_total, efermi
 
     up, dn = _accumulate(per_atom, is_spin, target_indices, target_orbs)
 

@@ -9,6 +9,7 @@ be verified without external dependencies.
 import sys
 import os
 import tempfile
+import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -195,6 +196,35 @@ class TestDOSCARPhysicalLayout:
 
         with pytest.raises(DbandError, match="unsupported projected DOS layout"):
             _classify_pdos_layout(7, total_is_spin=False)
+
+
+class TestNoncollinearProjection:
+    def test_reconstructs_saxis_projected_spin_channels(self):
+        from core.parsers.doscar import _project_noncollinear_spin
+
+        total = np.array([4.0, 2.0])
+        m3 = np.array([2.0, -1.0])
+        up, down = _project_noncollinear_spin(total, m3)
+        np.testing.assert_allclose(up, [3.0, 0.5])
+        np.testing.assert_allclose(down, [1.0, 1.5])
+
+    def test_rejects_unphysical_magnetization_density(self):
+        from core.parsers.doscar import _project_noncollinear_spin
+
+        with pytest.raises(DbandError, match="exceeds total DOS"):
+            _project_noncollinear_spin(np.array([1.0]), np.array([1.1]))
+
+    def test_accumulates_noncollinear_orbital_components(self):
+        from core.parsers.doscar import _accumulate_noncollinear
+
+        # lm layout: s, py, pz, px, dxy; each orbital has total,m1,m2,m3.
+        first = np.zeros((2, 20))
+        second = np.zeros((2, 20))
+        first[:, 16:20] = [[4.0, 0.0, 0.0, 2.0], [2.0, 0.0, 0.0, -1.0]]
+        second[:, 16:20] = [[2.0, 0.0, 0.0, 0.0], [4.0, 0.0, 0.0, 2.0]]
+        components = _accumulate_noncollinear([first, second], [0, 1], ["dxy"])
+        np.testing.assert_allclose(components["total"]["dxy"], [6.0, 6.0])
+        np.testing.assert_allclose(components["m3"]["dxy"], [2.0, 1.0])
 
 
 # ── Plugin system ───────────────────────────────────────────────────
