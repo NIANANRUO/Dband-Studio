@@ -227,6 +227,44 @@ class TestNoncollinearProjection:
         np.testing.assert_allclose(components["m3"]["dxy"], [2.0, 1.0])
 
 
+class TestVasprunNoncollinearLayout:
+    """vasprun.xml PDOS rows must use their declared physical layout."""
+
+    def test_classifies_scalar_and_noncollinear_partial_rows(self):
+        from core.parsers.vasprun import _classify_vasprun_partial_layout
+
+        assert _classify_vasprun_partial_layout(5, 5) == "scalar"
+        assert _classify_vasprun_partial_layout(20, 5) == "noncollinear"
+
+    def test_rejects_partial_row_with_unknown_width(self):
+        from core.parsers.vasprun import _classify_vasprun_partial_layout
+
+        with pytest.raises(DbandError, match="partial DOS row"):
+            _classify_vasprun_partial_layout(7, 5)
+
+    def test_accumulates_m3_before_reconstructing_saxis_channels(self):
+        from core.parsers.vasprun import _accumulate_vasprun_noncollinear
+
+        # Rows are total, m1, m2, m3 for each orbital.  The selected atoms
+        # must be summed before rho_up/down are reconstructed.
+        raw = {
+            0: np.array([[4.0, 0.0, 0.0, 2.0], [2.0, 0.0, 0.0, -1.0]]),
+            1: np.array([[2.0, 0.0, 0.0, 0.0], [4.0, 0.0, 0.0, 2.0]]),
+        }
+        up, down, total = _accumulate_vasprun_noncollinear(
+            raw, [0, 1], ["dxy"], ["dxy"])
+
+        np.testing.assert_allclose(total["dxy"], [6.0, 6.0])
+        np.testing.assert_allclose(up["dxy"], [4.0, 3.5])
+        np.testing.assert_allclose(down["dxy"], [2.0, 2.5])
+
+    def test_l_decomposed_d_is_not_fabricated_as_five_d_orbitals(self):
+        from core.parsers.vasprun import _field_targets
+
+        assert _field_targets("d", ["d"]) == [("d", 1.0)]
+        assert _field_targets("d", ["dxy", "dyz", "dz2", "dxz", "dx2-y2"]) == []
+
+
 # ── Plugin system ───────────────────────────────────────────────────
 
 class TestPluginSystem:
