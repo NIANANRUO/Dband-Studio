@@ -367,6 +367,11 @@ class MultiPDOSChartWidget(QWidget):
     def _extract_dos(self, rho_dict, target, length):
         """Extract requested orbital DOS or sum them up."""
         if target == "Total d-DOS":
+            aggregate = rho_dict.get("d")
+            if aggregate is not None:
+                aggregate = np.asarray(aggregate, dtype=np.float64)
+                if aggregate.shape == (length,) and np.isfinite(aggregate).all() and np.any(aggregate != 0):
+                    return aggregate
             total = np.zeros(length)
             for o in d_orb_names:
                 total += rho_dict.get(o, np.zeros(length))

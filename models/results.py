@@ -22,3 +22,11 @@ class DbandResult:
     # Per-orbital decomposition (keyed by orbital name)
     orb_weights: Dict[str, float] = field(default_factory=dict)   # percentages
     orb_centers: Dict[str, float] = field(default_factory=dict)   # eV
+    # ``lm`` exposes the five d orbitals.  ``l`` is LORBIT=10 and only has
+    # a physical aggregate d channel; callers must not fabricate components.
+    orbital_resolution: str = "lm"
+
+    @property
+    def is_aggregate_d(self) -> bool:
+        """Whether the result is an l-resolved (LORBIT=10) d total."""
+        return self.orbital_resolution == "l"

@@ -8,12 +8,14 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from core.exceptions import DbandError
+from core.pdos_metadata import PDOSMetadata
 from core.parsers.common import (
     _ensure_pymatgen,
     _PYMATGEN_ORB_MAP,
     _resolve_atom_indices, _ensure_positive, _site_symbol,
 )
 from core.parsers.constants import _ORB_TYPE_TO_ORBITALS, all_orb_names
+from core.parsers.doscar import _nearby_saxis, _project_noncollinear_spin
 
 _logger = logging.getLogger("dband.parsers")
 
@@ -32,6 +34,96 @@ _VASP_FIELD_MAP: dict[str, str] = {
 # when many distinct vasprun.xml files are loaded in one session).
 _STRUCT_CACHE: dict = {}
 _STRUCT_CACHE_MAX = 32
+
+
+def _classify_vasprun_partial_layout(data_width: int, field_count: int) -> str:
+    """Classify one ``<partial>`` DOS row without guessing its physics.
+
+    ``data_width`` excludes the leading energy value and ``field_count`` is
+    the number of orbital fields declared by VASP.  Collinear vasprun.xml
+    uses separate ``spin 1``/``spin 2`` sets, so each row has one value per
+    field.  A noncollinear/SOC site PDOS row carries four values per field:
+    total, m1, m2 and m3.
+    """
+    if field_count <= 0:
+        raise DbandError("vasprun.xml has no orbital fields in <partial> DOS.")
+    if data_width == field_count:
+        return "scalar"
+    if data_width == 4 * field_count:
+        return "noncollinear"
+    raise DbandError(
+        "Unsupported vasprun.xml partial DOS row: "
+        f"{data_width} data columns for {field_count} declared orbital fields. "
+        "Refusing to guess an orbital or spin-component mapping.")
+
+
+def _field_targets(field_name: str, target_orbs: List[str]) -> List[Tuple[str, float]]:
+    """Map one VASP field to requested output channels without fabrication.
+
+    LORBIT=10 reports l-resolved values (``d``), not five m-resolved d
+    orbitals.  The aggregate is therefore returned only when the caller
+    explicitly requests ``d``.  It is never divided equally into dxy/dyz/
+    dz2/dxz/dx2-y2.
+    """
+    name = field_name.strip().lower()
+    mapped = _VASP_FIELD_MAP.get(name)
+    if mapped is not None:
+        return [(mapped, 1.0)] if mapped in target_orbs else []
+    if name in _ORB_TYPE_TO_ORBITALS:
+        if name in target_orbs:
+            return [(name, 1.0)]
+        return []
+    return []
+
+
+def _vasprun_orbital_resolution(orb_fields: List[str]) -> str:
+    """Infer l versus lm resolution from declared vasprun.xml fields."""
+    names = {name.strip().lower() for name in orb_fields}
+    if names & {"dxy", "dyz", "dz2", "dxz", "x2-y2", "dx2", "dx2-y2"}:
+        return "lm"
+    if "d" in names:
+        return "l"
+    return "unknown"
+
+
+def _accumulate_vasprun_noncollinear(
+    raw_by_atom: Dict[int, np.ndarray],
+    target_indices: List[int],
+    orb_fields: List[str],
+    target_orbs: List[str],
+) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+    """Sum VASP total/m3 PDOS, then reconstruct the SAXIS projections."""
+    if not raw_by_atom:
+        raise DbandError("vasprun.xml contains no selected site-projected DOS rows.")
+
+    first = next(iter(raw_by_atom.values()))
+    if first.ndim != 2 or first.shape[0] == 0:
+        raise DbandError("vasprun.xml selected PDOS data are empty or malformed.")
+    n_energy = first.shape[0]
+    totals = {orb: np.zeros(n_energy, dtype=np.float64) for orb in target_orbs}
+    m3s = {orb: np.zeros(n_energy, dtype=np.float64) for orb in target_orbs}
+
+    for idx in target_indices:
+        if idx not in raw_by_atom:
+            raise DbandError(
+                f"vasprun.xml has no PDOS rows for selected atom index {idx + 1}.")
+        arr = np.asarray(raw_by_atom[idx], dtype=np.float64)
+        if arr.ndim != 2 or arr.shape[0] != n_energy:
+            raise DbandError("vasprun.xml selected atoms have inconsistent PDOS energy grids.")
+        if _classify_vasprun_partial_layout(arr.shape[1], len(orb_fields)) != "noncollinear":
+            raise DbandError("Expected noncollinear total/m1/m2/m3 site-PDOS rows.")
+        if not np.isfinite(arr).all():
+            raise DbandError("vasprun.xml noncollinear PDOS contains NaN or Inf.")
+        for field_index, field_name in enumerate(orb_fields):
+            for orbital, scale in _field_targets(field_name, target_orbs):
+                totals[orbital] += arr[:, field_index * 4] * scale
+                m3s[orbital] += arr[:, field_index * 4 + 3] * scale
+
+    up, down = {}, {}
+    for orbital in target_orbs:
+        up[orbital], down[orbital] = _project_noncollinear_spin(
+            totals[orbital], m3s[orbital])
+    return up, down, totals
 
 
 def _structure_cache_key(filepath: str):
@@ -185,6 +277,8 @@ def parse_vasprun_spin_all(
     filepath: str,
     atoms_str: str,
     orbitals: Optional[List[str]] = None,
+    *,
+    return_metadata: bool = False,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], float]:
     """Parse vasprun.xml once, returning (energy, rho_up, rho_dn, rho_total, ef).
     Uses lxml.etree.iterparse for high memory efficiency.
@@ -305,6 +399,16 @@ def parse_vasprun_spin_all(
     # Usually fields = ['energy', 's', 'py', 'pz', 'px', ...]
     orb_fields = fields[1:] if fields and fields[0].lower() == "energy" else fields
 
+    def finish(rho_up, rho_dn, rho_total, *, mode: str):
+        result = (energy, rho_up, rho_dn, rho_total, efermi)
+        if not return_metadata:
+            return result
+        return (*result, PDOSMetadata(
+            mode=mode,
+            orbital_resolution=_vasprun_orbital_resolution(orb_fields),
+            spin_axis=_nearby_saxis(filepath) if mode == "noncollinear" else None,
+            source_format="vasprun.xml"))
+
     if not orb_fields:
         raise DbandError(
             f"{filepath}: failed to collect <field> names from the "
@@ -313,44 +417,60 @@ def parse_vasprun_spin_all(
             "field names, orbital-to-column mapping is impossible — "
             "results would be meaningless all-zeros.")
     
+    raw_arrays = {}
+    layouts = set()
     for idx in target_indices:
         if not rho_up_raw[idx]:
-            continue
-            
-        arr_up = np.array(rho_up_raw[idx])
-        arr_dn = np.array(rho_dn_raw[idx]) if rho_dn_raw[idx] else None
-        
-        has_up = arr_up.shape[0] == len(energy)
-        has_dn = arr_dn is not None and arr_dn.shape[0] == len(energy)
-        
-        if not has_up:
-            _logger.warning("Atom %d DOS length mismatch, skipping.", idx)
-            continue
+            raise DbandError(
+                f"{filepath}: selected atom {idx + 1} has no site-projected DOS rows.")
+        arr_up = np.asarray(rho_up_raw[idx], dtype=np.float64)
+        if arr_up.ndim != 2 or arr_up.shape[0] != len(energy):
+            raise DbandError(
+                f"{filepath}: selected atom {idx + 1} PDOS length "
+                f"({arr_up.shape[0] if arr_up.ndim else 0}) does not match "
+                f"the total DOS energy grid ({len(energy)}).")
+        if not np.isfinite(arr_up).all():
+            raise DbandError(f"{filepath}: selected atom {idx + 1} PDOS contains NaN or Inf.")
+        raw_arrays[idx] = arr_up
+        layouts.add(_classify_vasprun_partial_layout(arr_up.shape[1], len(orb_fields)))
+
+    if len(layouts) != 1:
+        raise DbandError(
+            f"{filepath}: selected atoms use inconsistent vasprun.xml PDOS layouts: "
+            f"{sorted(layouts)}.")
+    layout = layouts.pop()
+
+    if layout == "noncollinear":
+        if any(rho_dn_raw[idx] for idx in target_indices):
+            raise DbandError(
+                f"{filepath}: noncollinear PDOS unexpectedly contains a second "
+                "collinear spin set; refusing an ambiguous interpretation.")
+        return finish(*_accumulate_vasprun_noncollinear(
+            raw_arrays, list(target_indices), orb_fields, target_orbs),
+            mode="noncollinear")
+
+    for idx in target_indices:
+        arr_up = raw_arrays[idx]
+        arr_dn = np.asarray(rho_dn_raw[idx], dtype=np.float64) if rho_dn_raw[idx] else None
+        if arr_dn is not None:
+            if (arr_dn.ndim != 2 or arr_dn.shape != arr_up.shape or
+                    not np.isfinite(arr_dn).all()):
+                raise DbandError(
+                    f"{filepath}: selected atom {idx + 1} spin-down PDOS does not "
+                    "match its spin-up grid or contains NaN/Inf.")
 
         for i, field_name in enumerate(orb_fields):
-            if i >= arr_up.shape[1]:
-                break # defensive
-
-            if field_name in _VASP_FIELD_MAP:
-                sub_orbs = [(_VASP_FIELD_MAP[field_name], 1.0)]
-            elif field_name in _ORB_TYPE_TO_ORBITALS:
-                sub_orbs_list = _ORB_TYPE_TO_ORBITALS[field_name]
-                n = len(sub_orbs_list)
-                sub_orbs = [(oname, 1.0 / n) for oname in sub_orbs_list]
-            else:
-                continue
-                
-            for oname, scale in sub_orbs:
-                if oname in target_orbs:
-                    rho_up[oname] += np.abs(arr_up[:, i]) * scale
-                    if has_dn:
-                        rho_dn[oname] += np.abs(arr_dn[:, i]) * scale
+            for oname, scale in _field_targets(field_name, target_orbs):
+                rho_up[oname] += np.abs(arr_up[:, i]) * scale
+                if arr_dn is not None:
+                    rho_dn[oname] += np.abs(arr_dn[:, i]) * scale
                         
     rho_up = _ensure_positive(rho_up)
     rho_dn = _ensure_positive(rho_dn)
     rho_total = {o: rho_up[o] + rho_dn[o] for o in target_orbs}
     
-    return energy, rho_up, rho_dn, rho_total, efermi
+    return finish(rho_up, rho_dn, rho_total,
+                  mode="collinear" if any(rho_dn_raw[idx] for idx in target_indices) else "nonspin")
 
 
 def parse_vasprun(

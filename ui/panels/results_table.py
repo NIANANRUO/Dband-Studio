@@ -243,11 +243,18 @@ class ResultsTableWidget(QWidget):
                 f"{rd.width:.4f}" if np.isfinite(rd.width) else "NaN",
                 f"{rd.filling:.1f}" if np.isfinite(rd.filling) else "NaN",
             ]
-            for o in d_orb_names:
-                vals.append(f"{rd.orb_weights.get(o, 0):.1f}%")
-            for o in d_orb_names:
-                c = rd.orb_centers.get(o, float('nan'))
-                vals.append(f"{c:.4f}" if np.isfinite(c) else "NaN")
+            if rd.is_aggregate_d:
+                # LORBIT=10 has one physical d-total channel, not five
+                # components.  Keep the table schema stable while showing
+                # unavailable m-resolved values honestly.
+                vals.extend(["—"] * len(d_orb_names))
+                vals.extend(["—"] * len(d_orb_names))
+            else:
+                for o in d_orb_names:
+                    vals.append(f"{rd.orb_weights.get(o, 0):.1f}%")
+                for o in d_orb_names:
+                    c = rd.orb_centers.get(o, float('nan'))
+                    vals.append(f"{c:.4f}" if np.isfinite(c) else "NaN")
 
             for ci, v in enumerate(vals):
                 item = QTableWidgetItem(v)
