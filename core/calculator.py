@@ -71,6 +71,67 @@ except Exception as exc:
 VALID_METHODS = ("trapezoid", "simpson")
 
 
+def _validate_metrics_inputs(
+    energy: np.ndarray,
+    rho_dict: Dict[str, np.ndarray],
+    orb_names: List[str],
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """Return validated float64 inputs for a scientific DOS moment.
+
+    A malformed energy grid or a partially read PDOS must fail before any
+    numerical result is constructed.  Returning a plausible value for such
+    input is materially worse than rejecting the file.
+    """
+    energy = np.asarray(energy, dtype=np.float64)
+    if energy.ndim != 1:
+        raise ValueError("Energy axis must be one-dimensional.")
+    if not np.isfinite(energy).all():
+        raise ValueError("Energy axis must contain only finite values.")
+    if energy.size >= 2 and not np.all(np.diff(energy) > 0.0):
+        raise ValueError("Energy axis must be strictly increasing.")
+
+    arrays: Dict[str, np.ndarray] = {}
+    for name in orb_names:
+        if name not in rho_dict:
+            continue
+        arr = np.asarray(rho_dict[name], dtype=np.float64)
+        if arr.ndim != 1 or arr.shape[0] != energy.shape[0]:
+            raise ValueError(
+                f"DOS array '{name}' length must match the energy axis.")
+        if not np.isfinite(arr).all():
+            raise ValueError(
+                f"DOS array '{name}' must contain only finite values.")
+        arrays[name] = arr
+    return energy, arrays
+
+
+def _clip_window(
+    energy: np.ndarray,
+    arrays: Dict[str, np.ndarray],
+    lower: float,
+    upper: float,
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """Restrict DOS arrays to a closed window, interpolating both edges."""
+    lower = max(float(lower), float(energy[0]))
+    upper = min(float(upper), float(energy[-1]))
+    if lower >= upper:
+        return np.empty(0, dtype=np.float64), {
+            key: np.empty(0, dtype=np.float64) for key in arrays
+        }
+
+    interior = (energy > lower) & (energy < upper)
+    clipped_energy = np.concatenate(([lower], energy[interior], [upper]))
+    clipped = {
+        key: np.concatenate((
+            [np.interp(lower, energy, values)],
+            values[interior],
+            [np.interp(upper, energy, values)],
+        ))
+        for key, values in arrays.items()
+    }
+    return clipped_energy, clipped
+
+
 def _integrate(y, x, *, axis=None, method="trapezoid"):
     """Dispatch to the selected numerical integration backend.
 
@@ -267,22 +328,23 @@ def calc_metrics(
     if orb_names is None:
         orb_names = d_orb_names
 
-    energy = np.asarray(energy, dtype=np.float64)
+    energy, validated_rho = _validate_metrics_inputs(energy, rho_dict, orb_names)
+    if not np.isfinite(ef):
+        raise ValueError("Fermi energy must be finite.")
     e = energy - ef
 
     if custom_range is not None:
-        mask = (e >= custom_range[0]) & (e <= custom_range[1])
+        if custom_range[0] >= custom_range[1]:
+            raise ValueError("Custom integration range must have emin < emax.")
+        ec, rc = _clip_window(e, validated_rho, custom_range[0], custom_range[1])
     elif limit_fermi:
-        mask = e <= 0
+        ec, rc = _clip_window(e, validated_rho, e[0], 0.0)
     else:
-        mask = np.ones_like(e, dtype=bool)
+        ec, rc = e, validated_rho
 
-    ec = e[mask]
     empty = {k: {"weight": 0.0, "center": np.nan} for k in orb_names}
     if ec.shape[0] < 2:
         return np.nan, np.nan, np.nan, empty
-
-    rc = {k: np.asarray(v)[mask] for k, v in rho_dict.items() if k in orb_names}
 
     total = np.zeros_like(ec, dtype=np.float64)
     for k in orb_names:
@@ -299,7 +361,7 @@ def calc_metrics(
     e_full = energy - ef
     total_full = np.zeros_like(e_full, dtype=np.float64)
     for k in orb_names:
-        arr = rho_dict.get(k)
+        arr = validated_rho.get(k)
         if arr is not None:
             total_full += np.asarray(arr, dtype=np.float64)
     filling = _filling_core(e_full, total_full, method=method)

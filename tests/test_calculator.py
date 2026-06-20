@@ -119,14 +119,14 @@ class TestCalcMetricsEdgeCases:
             assert orb[k]["weight"] == 0.0
             assert np.isnan(orb[k]["center"])
 
-    def test_tiny_array_returns_nan(self, tiny_dos):
-        """Array with < 2 points after masking should return NaN."""
+    def test_tiny_window_uses_interpolated_edges(self, tiny_dos):
+        """A sub-grid window still has two interpolated endpoints."""
         e, rho, ef = tiny_dos
         # Use custom_range that selects only 1 point
         center, width, filling, orb = calc_metrics(
             e, rho, ef=ef, custom_range=(-0.1, 0.1))
-        assert np.isnan(center)
-        assert np.isnan(width)
+        assert np.isfinite(center)
+        assert np.isfinite(width)
 
     def test_custom_range(self, gaussian_dos):
         """Custom range should restrict integration window."""
@@ -160,6 +160,36 @@ class TestCalcMetricsEdgeCases:
         rho = {"dxy": np.exp(-e**2)}  # Only 1 orbital
         center, width, filling, orb = calc_metrics(e, rho, ef=0.0)
         assert not np.isnan(center)  # Should still compute
+
+
+class TestInputValidationAndWindowEdges:
+    """Scientific-integrity guards: invalid grids must not yield a number."""
+
+    def test_rejects_dos_length_mismatch(self):
+        with pytest.raises(ValueError, match="length"):
+            calc_metrics(np.array([-1.0, 0.0, 1.0]),
+                         {"dxy": np.array([1.0, 2.0])}, ef=0.0)
+
+    def test_rejects_non_finite_dos(self):
+        with pytest.raises(ValueError, match="finite"):
+            calc_metrics(np.array([-1.0, 0.0, 1.0]),
+                         {"dxy": np.array([1.0, np.nan, 1.0])}, ef=0.0)
+
+    def test_rejects_non_monotonic_energy(self):
+        with pytest.raises(ValueError, match="strictly increasing"):
+            calc_metrics(np.array([-1.0, 0.5, 0.0]),
+                         {"dxy": np.ones(3)}, ef=0.0)
+
+    def test_custom_window_interpolates_requested_edges(self):
+        energy = np.array([0.0, 1.0, 2.0])
+        rho = {"dxy": energy.copy()}
+        center, _, _, _ = calc_metrics(
+            energy, rho, ef=0.0, custom_range=(0.25, 1.75))
+        clipped_energy = np.array([0.25, 1.0, 1.75])
+        clipped_dos = clipped_energy.copy()
+        expected = (np.trapz(clipped_energy * clipped_dos, clipped_energy)
+                    / np.trapz(clipped_dos, clipped_energy))
+        assert center == pytest.approx(expected, abs=1e-12)
 
 
 # ── Tests: numerical stability (no numba dependency) ───────────────
@@ -250,16 +280,15 @@ class TestFillingRobustness:
     falls back to a whole-bin trapezoid, then clamps the result to [0, 100] %.
     """
 
-    def test_non_monotonic_axis_does_not_crash_or_overflow(self):
-        """A stitched grid with a reversed segment must stay in [0, 100] %."""
+    def test_non_monotonic_axis_is_rejected(self):
+        """A stitched/reversed grid has no well-defined DOS integral."""
         # Ascending segment, then a deliberate reversal (e decreases), then
         # ascending again.  Two straddle-relevant bins sit on the bad region.
         e = np.array([-2.0, -1.0, 0.5, -0.5, 0.5, 2.0])
         dos = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
         rho = {o: dos.copy() for o in ["dxy", "dyz", "dz2", "dxz", "dx2-y2"]}
-        _, _, filling, _ = calc_metrics(e, rho, ef=0.0)
-        assert np.isfinite(filling)
-        assert 0.0 <= filling <= 100.0
+        with pytest.raises(ValueError, match="strictly increasing"):
+            calc_metrics(e, rho, ef=0.0)
 
     def test_filling_clamped_to_unit_interval(self):
         """A signed/net DOS with negative regions cannot exceed [0, 100] %."""
