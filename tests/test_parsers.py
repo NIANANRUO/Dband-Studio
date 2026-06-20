@@ -191,6 +191,20 @@ class TestDOSCARPhysicalLayout:
         assert layout.orbital_resolution == "lm"
         assert layout.components == ("total", "m1", "m2", "m3")
 
+    def test_requires_mode_metadata_for_ambiguous_sixteen_column_layout(self):
+        from core.parsers.doscar import _classify_pdos_layout
+
+        with pytest.raises(DbandError, match="ambiguous"):
+            _classify_pdos_layout(16, total_is_spin=False)
+
+        nonspin = _classify_pdos_layout(
+            16, total_is_spin=False, noncollinear_hint=False)
+        assert (nonspin.mode, nonspin.orbital_resolution) == ("nonspin", "lm")
+
+        noncollinear = _classify_pdos_layout(
+            16, total_is_spin=False, noncollinear_hint=True)
+        assert (noncollinear.mode, noncollinear.orbital_resolution) == ("noncollinear", "l")
+
     def test_rejects_unknown_projected_column_count(self):
         from core.parsers.doscar import _classify_pdos_layout
 
@@ -225,6 +239,57 @@ class TestNoncollinearProjection:
         components = _accumulate_noncollinear([first, second], [0, 1], ["dxy"])
         np.testing.assert_allclose(components["total"]["dxy"], [6.0, 6.0])
         np.testing.assert_allclose(components["m3"]["dxy"], [2.0, 1.0])
+
+    def test_lorbit10_noncollinear_preserves_only_aggregate_d(self):
+        from core.parsers.doscar import _accumulate_noncollinear
+
+        # LORBIT=10 field order is s, p, d, f.  The d field is the third
+        # four-component group; no m-resolved d orbital exists in this data.
+        block = np.zeros((2, 16))
+        block[:, 8:12] = [[4.0, 0.0, 0.0, 2.0], [2.0, 0.0, 0.0, -1.0]]
+        components = _accumulate_noncollinear(
+            [block], [0], ["d"], noncollinear_hint=True)
+
+        np.testing.assert_allclose(components["total"]["d"], [4.0, 2.0])
+        np.testing.assert_allclose(components["m3"]["d"], [2.0, -1.0])
+
+    def test_doscar_lorbit10_noncollinear_uses_incar_metadata(self):
+        from core.parsers.doscar import parse_doscar_spin_all
+
+        tmp_dir = tempfile.mkdtemp(prefix="dband_ncl_lorbit10_")
+        doscar = os.path.join(tmp_dir, "DOSCAR")
+        incar = os.path.join(tmp_dir, "INCAR")
+        with open(incar, "w", encoding="utf-8") as f:
+            f.write("LNONCOLLINEAR = .TRUE.\nSAXIS = 0 0 1\n")
+        rows = []
+        for energy, total, m3 in [(-1.0, 4.0, 2.0), (1.0, 2.0, -1.0)]:
+            values = [0.0] * 16
+            values[8:12] = [total, 0.0, 0.0, m3]
+            rows.append(f"{energy:.1f} " + " ".join(str(v) for v in values) + "\n")
+        with open(doscar, "w", encoding="utf-8") as f:
+            f.write("1 1 1 0\n0 0 0\n0\nCAR\nsynthetic\n")
+            f.write("1 -1 2 0 1\n")
+            f.write("-1.0 1.0 0.0\n1.0 1.0 1.0\n")
+            f.write("1 -1 2 0 1\n")
+            f.writelines(rows)
+
+        energy, up, down, total, ef = parse_doscar_spin_all(doscar, "1", orbitals=["d"])
+        np.testing.assert_allclose(energy, [-1.0, 1.0])
+        np.testing.assert_allclose(total["d"], [4.0, 2.0])
+        np.testing.assert_allclose(up["d"], [3.0, 0.5])
+        np.testing.assert_allclose(down["d"], [1.0, 1.5])
+
+
+class TestAggregateDResult:
+    def test_result_marks_l_resolved_d_as_aggregate(self):
+        from models.results import DbandResult
+
+        result = DbandResult(
+            label="LORBIT10", range_name="All", center=-1.0,
+            width=1.0, filling=50.0, orb_weights={"d": 100.0},
+            orb_centers={"d": -1.0}, orbital_resolution="l")
+
+        assert result.is_aggregate_d is True
 
 
 class TestVasprunNoncollinearLayout:

@@ -19,6 +19,16 @@ from core.calculator import calc_metrics
 from models.results import DbandResult
 
 
+def _select_metric_d_orbitals(rho_total, energy):
+    """Choose the physically available d resolution for the band moment."""
+    aggregate = rho_total.get("d")
+    if aggregate is not None:
+        arr = np.asarray(aggregate, dtype=np.float64)
+        if arr.shape == np.asarray(energy).shape and np.isfinite(arr).all() and np.any(arr != 0):
+            return ["d"]
+    return list(d_orb_names)
+
+
 class CalculationWorker(QThread):
     """Background worker: parse files + compute metrics without blocking UI.
 
@@ -75,8 +85,9 @@ class CalculationWorker(QThread):
                 # Only d-orbitals are needed for d-band metrics; requesting
                 # just them avoids parsing/allocating 11 unused s/p/f arrays
                 # (3× memory saving on large systems).
+                requested_orbitals = [*d_orb_names, "d"]
                 energy, rho_up, rho_dn, rho_total, ef = DataLoader.load_spin_all(
-                    fp, current_atoms, orbitals=d_orb_names)
+                    fp, current_atoms, orbitals=requested_orbitals)
                 # VASPKIT PDOS files never embed the Fermi level (ef forced to 0).
                 # Warn once per file so users know the energy axis is NOT aligned.
                 if ftype == "VASPKIT PDOS":
@@ -88,7 +99,9 @@ class CalculationWorker(QThread):
                 else:
                     rho = rho_total
 
-                rho_d = {o: rho.get(o, np.zeros_like(energy)) for o in d_orb_names}
+                metric_orbitals = _select_metric_d_orbitals(rho_total, energy)
+                orbital_resolution = "l" if metric_orbitals == ["d"] else "lm"
+                rho_d = {o: rho.get(o, np.zeros_like(energy)) for o in metric_orbitals}
                 total_check = sum(np.sum(np.abs(v)) for v in rho_d.values())
                 if total_check == 0:
                     raise MissingProjectedDOSError(label, filepath=fp)
@@ -109,6 +122,8 @@ class CalculationWorker(QThread):
                     "up": rho_up,
                     "down": rho_dn,
                     "has_spin": is_spin,
+                    "orbital_resolution": orbital_resolution,
+                    "d_orbitals": metric_orbitals,
                 }
 
                 ranges = []
@@ -123,7 +138,7 @@ class CalculationWorker(QThread):
 
                 for rname, rlim, rcust in ranges:
                     center, width, filling, om = calc_metrics(
-                        energy, rho_d, ef, orb_names=d_orb_names,
+                        energy, rho_d, ef, orb_names=metric_orbitals,
                         limit_fermi=rlim, custom_range=rcust,
                         method=self.integration_method)
 
@@ -133,8 +148,9 @@ class CalculationWorker(QThread):
                         center=center,
                         width=width,
                         filling=filling,
-                        orb_weights={o: om[o]["weight"] * 100 for o in d_orb_names},
-                        orb_centers={o: om[o]["center"] for o in d_orb_names},
+                        orb_weights={o: om[o]["weight"] * 100 for o in metric_orbitals},
+                        orb_centers={o: om[o]["center"] for o in metric_orbitals},
+                        orbital_resolution=orbital_resolution,
                     )
                     results_data.append(rd)
 

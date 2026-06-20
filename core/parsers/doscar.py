@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -59,6 +60,52 @@ _LORBIT11_ORBS = s_orb_names + p_orb_names + d_orb_names + f_orb_names
 _LORBIT10_ORBS = ["s", "p", "d", "f"]
 
 
+def _nearby_noncollinear_hint(filepath: str) -> Optional[bool]:
+    """Read VASP output metadata needed to resolve an ambiguous DOSCAR row.
+
+    DOSCAR does not encode LORBIT separately.  A 16-column non-spin total
+    row is therefore ambiguous between LORBIT=11 scalar DOS and LORBIT=10
+    noncollinear four-component DOS.  Prefer ``vasprun.xml`` because it is
+    generated output, then fall back to the nearby INCAR.  If neither records
+    the flags, callers must reject the ambiguous layout instead of guessing.
+    """
+    directory = os.path.dirname(os.path.abspath(filepath)) or "."
+    values: Dict[str, bool] = {}
+    for filename in ("vasprun.xml", "INCAR"):
+        candidate = os.path.join(directory, filename)
+        if not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate, "r", encoding="utf-8", errors="ignore") as fh:
+                for line_number, line in enumerate(fh):
+                    for name in ("LNONCOLLINEAR", "LSORBIT"):
+                        incar_match = re.match(
+                            rf"^\s*{name}\s*=\s*([^\s!#]+)", line, flags=re.IGNORECASE)
+                        xml_match = re.search(
+                            rf'name=["\']{name}["\'][^>]*>\s*([^<\s]+)',
+                            line, flags=re.IGNORECASE)
+                        match = incar_match or xml_match
+                        if match:
+                            value = match.group(1).strip().strip(".").upper()
+                            if value in {"T", "TRUE"}:
+                                values[name] = True
+                            elif value in {"F", "FALSE"}:
+                                values[name] = False
+                    # VASP parameters appear in the initial XML section;
+                    # avoid scanning an enormous DOS payload solely for tags.
+                    if filename == "vasprun.xml" and line_number > 20000:
+                        break
+        except OSError:
+            continue
+
+        if values.get("LNONCOLLINEAR") is True or values.get("LSORBIT") is True:
+            return True
+
+    if values:
+        return False
+    return None
+
+
 @dataclass(frozen=True)
 class PDOSLayout:
     """Physical interpretation of one DOSCAR site-projected data row."""
@@ -69,7 +116,12 @@ class PDOSLayout:
     components: Tuple[str, ...]
 
 
-def _classify_pdos_layout(n_cols: int, *, total_is_spin: bool) -> PDOSLayout:
+def _classify_pdos_layout(
+    n_cols: int,
+    *,
+    total_is_spin: bool,
+    noncollinear_hint: Optional[bool] = None,
+) -> PDOSLayout:
     """Classify VASP projected DOS columns without heuristic truncation.
 
     ``n_cols`` excludes the leading energy column.  VASP emits one component
@@ -92,21 +144,43 @@ def _classify_pdos_layout(n_cols: int, *, total_is_spin: bool) -> PDOSLayout:
             return PDOSLayout("collinear", "l", tuple(_LORBIT10_ORBS),
                               ("up", "down"))
     else:
+        scalar = None
+        noncollinear = None
         if n_cols in lm_counts:
-            return PDOSLayout("nonspin", "lm", tuple(_LORBIT11_ORBS[:n_cols]),
-                              ("total",))
-        if n_cols in l_counts:
-            return PDOSLayout("nonspin", "l", tuple(_LORBIT10_ORBS),
-                              ("total",))
+            scalar = PDOSLayout("nonspin", "lm", tuple(_LORBIT11_ORBS[:n_cols]),
+                                ("total",))
+        elif n_cols in l_counts:
+            scalar = PDOSLayout("nonspin", "l", tuple(_LORBIT10_ORBS),
+                                ("total",))
         if n_cols % 4 == 0:
             count = n_cols // 4
             if count in lm_counts:
-                return PDOSLayout("noncollinear", "lm",
-                                  tuple(_LORBIT11_ORBS[:count]),
-                                  ("total", "m1", "m2", "m3"))
-            if count in l_counts:
-                return PDOSLayout("noncollinear", "l", tuple(_LORBIT10_ORBS),
-                                  ("total", "m1", "m2", "m3"))
+                noncollinear = PDOSLayout("noncollinear", "lm",
+                                           tuple(_LORBIT11_ORBS[:count]),
+                                           ("total", "m1", "m2", "m3"))
+            elif count in l_counts:
+                noncollinear = PDOSLayout("noncollinear", "l", tuple(_LORBIT10_ORBS),
+                                           ("total", "m1", "m2", "m3"))
+
+        if scalar is not None and noncollinear is not None:
+            if noncollinear_hint is None:
+                raise DbandError(
+                    f"ambiguous projected DOS layout: {n_cols} columns can be "
+                    "non-spin lm-resolved or noncollinear l-resolved. Provide "
+                    "matching INCAR or vasprun.xml metadata (LNONCOLLINEAR/LSORBIT).")
+            return noncollinear if noncollinear_hint else scalar
+        if noncollinear is not None:
+            if noncollinear_hint is False:
+                raise DbandError(
+                    "Projected DOS has noncollinear total/m1/m2/m3 columns but "
+                    "nearby calculation metadata declares LNONCOLLINEAR=F and LSORBIT=F.")
+            return noncollinear
+        if scalar is not None:
+            if noncollinear_hint is True:
+                raise DbandError(
+                    "Nearby calculation metadata declares noncollinear/SOC, but "
+                    "the projected DOS has no total/m1/m2/m3 components.")
+            return scalar
 
     raise DbandError(
         f"unsupported projected DOS layout: {n_cols} columns; refusing to "
@@ -128,7 +202,11 @@ def _project_noncollinear_spin(
 
 
 def _accumulate_noncollinear(
-    per_atom: List[np.ndarray], target_indices: List[int], target_orbs: List[str],
+    per_atom: List[np.ndarray],
+    target_indices: List[int],
+    target_orbs: List[str],
+    *,
+    noncollinear_hint: Optional[bool] = None,
 ) -> Dict[str, Dict[str, np.ndarray]]:
     """Sum total/m1/m2/m3 PDOS over selected atoms before spin projection."""
     if not per_atom:
@@ -144,7 +222,8 @@ def _accumulate_noncollinear(
         arr = per_atom[idx]
         if arr.shape[0] != n_energy:
             raise DbandError("DOSCAR atom PDOS blocks have inconsistent energy lengths.")
-        layout = _classify_pdos_layout(arr.shape[1], total_is_spin=False)
+        layout = _classify_pdos_layout(
+            arr.shape[1], total_is_spin=False, noncollinear_hint=noncollinear_hint)
         if layout.mode != "noncollinear":
             raise DbandError("Expected noncollinear total/m1/m2/m3 projected DOS layout.")
         for orb in target_orbs:
@@ -362,11 +441,16 @@ def parse_doscar_spin_all(
         # No structure file: only numeric indices are meaningful.
         target_indices = _resolve_numeric_indices(atoms_str, len(per_atom))
 
-    layout = (_classify_pdos_layout(per_atom[0].shape[1], total_is_spin=is_spin)
+    noncollinear_hint = _nearby_noncollinear_hint(filepath)
+    layout = (_classify_pdos_layout(
+        per_atom[0].shape[1], total_is_spin=is_spin,
+        noncollinear_hint=noncollinear_hint)
               if per_atom else None)
 
     if layout is not None and layout.mode == "noncollinear":
-        components = _accumulate_noncollinear(per_atom, target_indices, target_orbs)
+        components = _accumulate_noncollinear(
+            per_atom, target_indices, target_orbs,
+            noncollinear_hint=noncollinear_hint)
         rho_up = {}
         rho_dn = {}
         rho_total = {}

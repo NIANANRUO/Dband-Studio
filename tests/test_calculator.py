@@ -13,12 +13,49 @@ import sys
 import os
 import numpy as np
 import pytest
+from unittest import mock
 
 # Ensure project root is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from core.calculator import calc_metrics
 from utils.styling import annotate_center
+
+
+def test_lorbit10_uses_one_aggregate_d_metric_channel():
+    """An l-resolved d DOS must not be represented as five fake orbitals."""
+    from core.services.calculation_worker import _select_metric_d_orbitals
+
+    energy = np.array([-1.0, 1.0])
+    assert _select_metric_d_orbitals({"d": np.array([2.0, 3.0])}, energy) == ["d"]
+    assert _select_metric_d_orbitals({"d": np.zeros(2)}, energy) != ["d"]
+
+
+def test_calculation_worker_retains_lorbit10_as_aggregate_d_result():
+    """The end-to-end worker must calculate d-total, not five zero channels."""
+    from core.services.calculation_worker import CalculationWorker
+
+    worker = CalculationWorker(
+        [{"path": "synthetic/DOSCAR", "label": "LORBIT10"}], "DOSCAR", "1", "total",
+        True, False, False, (-10.0, 10.0))
+    completed = []
+    worker.calculation_done.connect(lambda results, cache: completed.append((results, cache)))
+    energy = np.array([-1.0, 1.0])
+    aggregate = {"d": np.array([2.0, 2.0])}
+    zeros = {"d": np.zeros(2)}
+
+    with mock.patch(
+        "core.services.calculation_worker.DataLoader.load_spin_all",
+        return_value=(energy, aggregate, zeros, aggregate, 0.0),
+    ):
+        worker.run()
+
+    assert len(completed) == 1
+    results, cache = completed[0]
+    assert len(results) == 1
+    assert results[0].is_aggregate_d is True
+    assert results[0].orb_weights["d"] == pytest.approx(100.0)
+    assert cache["LORBIT10"]["orbital_resolution"] == "l"
 
 
 # ── Fixtures ────────────────────────────────────────────────────────
