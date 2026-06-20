@@ -9,8 +9,10 @@ import os
 import sys
 from pathlib import Path
 
-# Project root (one level up from installer/)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# PyInstaller executes spec files through ``exec`` and does not define
+# ``__file__``. ``SPECPATH`` is the supported path supplied by PyInstaller.
+# The project root is one directory above installer/.
+PROJECT_ROOT = Path(SPECPATH).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 a = Analysis(
@@ -19,6 +21,8 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(PROJECT_ROOT / 'config' / 'themes.json'), 'config'),
+        # Runtime UI resources are resolved relative to the frozen bundle.
+        (str(PROJECT_ROOT / 'assets'), 'assets'),
     ],
     hiddenimports=[
         # pymatgen — lazy-loaded, must be explicit
