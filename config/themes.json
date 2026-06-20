@@ -1,0 +1,67 @@
+{
+  "2_color": {
+    "Theme 1 (Red-Gray)": ["#bb5f70", "#afafad"],
+    "Theme 2 (Blue-Cyan)": ["#016190", "#c5defa"],
+    "Theme 3 (Baby Blue-Pink)": ["#b2cbf7", "#f8bfc0"],
+    "Theme 4 (Green-Rose)": ["#b6d481", "#dba3ac"],
+    "Theme 5 (Deep Blue-Green)": ["#0c88c5", "#46b071"],
+    "Theme 6 (Sky-Yellow)": ["#b3d1e0", "#fbe1a3"],
+    "Theme 7 (GrayBlue-Teal)": ["#82abe1", "#8fb6b4"],
+    "Theme 8 (Purple-Lime)": ["#a5a2c7", "#aed477"],
+    "Theme 9 (Orange-Green)": ["#f09977", "#9dcd84"],
+    "Theme 10 (Teal-Lavender)": ["#8fb6b4", "#c4c9e5"],
+    "Theme 11 (Peach-IceBlue)": ["#f6cbc7", "#c6e8ed"],
+    "Theme 12 (Vivid Orange-Blue)": ["#ef9154", "#5c87b1"],
+    "Theme 13 (Tan-LightBlue)": ["#d9a190", "#a6c8cf"],
+    "Theme 14 (Olive-Navy)": ["#699854", "#0a5d95"],
+    "Theme 15 (Sunset-Purple)": ["#f79852", "#702f91"]
+  },
+  "3_color": {
+    "Spring (Red-Yellow-Mint)": ["#f38181", "#fce38a", "#95e1d3"],
+    "Beach (Teal-Peach-White)": ["#0881a3", "#ffd6a4", "#fde9df"],
+    "Autumn (Plum-Red-Sage)": ["#6c5070", "#df6a6a", "#c2dbc1"],
+    "Berry (Grey-Cream-Red)": ["#928a97", "#fbe8d3", "#f85f73"],
+    "Citrus (Teal-Lime-Yellow)": ["#35b0ab", "#c5f0a4", "#faffb8"],
+    "Ocean (Teal-Cyan-Navy)": ["#3fd2c7", "#93dcfc", "#074b90"],
+    "Twilight (Lavender-Cyan-Blue)": ["#8e8de1", "#c3d7f2", "#5b89d8"],
+    "Night (Orange-Purple-Teal)": ["#f84914", "#59187e", "#2fb4af"],
+    "Primary (Blue-Yellow-Cyan)": ["#17519e", "#f7dd2f", "#4fcbe9"],
+    "Water (Blue-Cyan-Ice)": ["#1e95d4", "#78cede", "#b1e4e7"],
+    "Rose (Rose-Peach-Pink)": ["#ce7e73", "#f5a596", "#f8d5ce"],
+    "Dusk (Navy-Mauve-Apricot)": ["#38546d", "#cba3b2", "#fbbe85"],
+    "Earthy (Maroon-Orange-Peach)": ["#782c1f", "#df8d15", "#f2bc94"],
+    "Meadow (Lime-Mint-LightBlue)": ["#9de64c", "#75f798", "#9ac1f0"],
+    "Forest (Olive-Lime-Yellow)": ["#5e644f", "#b3d43d", "#e0f687"]
+  },
+  "4_color": {
+    "Pastel 4": ["#FFC0CB", "#FA8072", "#FFA500", "#87CEEB"],
+    "Dark 4": ["#222021", "#4E3577", "#8A3F80", "#BB586C"],
+    "Vibrant 4": ["#4D9DC9", "#E18E4D", "#4EBB9D", "#E7B050"],
+    "Nature Light (Cell)": ["#BFBADA", "#FB8071", "#7FB1D4", "#FFB461"],
+    "Nature Dark (Nature)": ["#3A2995", "#4E84B6", "#F9804B", "#C0C0C0"],
+    "Bright Contrast": ["#E7373C", "#4EC5AB", "#FFCD31", "#77CEF4"],
+    "Classic Contrast": ["#595757", "#E7A630", "#D30013", "#228080"]
+  },
+  "5_color_dos": {
+    "Distinct Categorical": ["#4280B3", "#E28035", "#4CA63B", "#DE2D28", "#886BAD"],
+    "Mountain Sunset": ["#1D3362", "#768EB4", "#AB8B9A", "#CC585E", "#FF644F"],
+    "Earthy Teal-Orange": ["#17A39F", "#CFB278", "#E65127", "#B45E62", "#5A74A6"],
+    "SCI Classic Red-Blue": ["#7a0101", "#be1420", "#fbf0d9", "#012f48", "#669aba"],
+    "Nature Top Tier 1": ["#A09FA4", "#D4556E", "#1D7D6A", "#4E5BA6", "#965DA2"],
+    "Nature Top Tier 2": ["#3A6883", "#6EC4E9", "#9E468D", "#C76475", "#053F1C"],
+    "Nature Top Tier 3": ["#65C2A5", "#FC8C62", "#8EA0CC", "#E78AC1", "#A6D854"],
+    "Nature Top Tier 4": ["#8DC5E8", "#3D6680", "#D72828", "#3A9237", "#D2868B"],
+    "Nature Top Tier 5": ["#6769A1", "#B6B6B6", "#A39571", "#3183BA", "#D85B75"],
+    "Nature Top Tier 6": ["#B4B4B4", "#3483BE", "#D65C73", "#71ACBC", "#D0A0AE"],
+    "Nature Top Tier 7": ["#E5194C", "#3CB34B", "#F48232", "#4362D7", "#45F0EF"],
+    "Nature Top Tier 8": ["#F2B56E", "#71B8ED", "#FBE79E", "#84D8D7", "#B8AEEA"],
+    "Nature Top Tier 9": ["#71C58B", "#EF8979", "#8DCCC2", "#EAC49A", "#BA6C87"],
+    "Nature Top Tier 10": ["#7F7F7F", "#FF94BB", "#7FC7CA", "#AC8CD2", "#DCC0FE"],
+    "Nature Top Tier 11": ["#818181", "#FF7120", "#C60300", "#2365D4", "#030303"],
+    "Default Material": ["#E91E63", "#2196F3", "#4CAF50", "#FF9800", "#9C27B0"]
+  },
+  "multi_color": {
+    "Rainbow 10": ["#080060", "#f4de8c", "#64c2a6", "#ce4141", "#a25757", "#b1417e", "#328c8c", "#f79a7c", "#e43334", "#33348d"],
+    "Global Cycle 14": ["#3d3d3d", "#00743f", "#aece34", "#f5de24", "#f9ea72", "#f6c3db", "#ce6ba9", "#f28f24", "#cb232a", "#244c8c", "#5db9dd", "#bb6d26", "#581f0c", "#c2c4c6"]
+  }
+}

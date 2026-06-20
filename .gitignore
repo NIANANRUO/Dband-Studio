@@ -1,0 +1,61 @@
+# Python bytecode and test tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local Python environments and editor settings
+.venv/
+venv/
+env/
+.idea/
+.vscode/
+.workbuddy/
+
+# Packaging output
+build/
+dist/
+*.egg-info/
+
+# VASP calculation outputs: large, user-specific raw research data
+DOSCAR
+vasprun.xml
+CHG
+CHGCAR
+WAVECAR
+PROCAR
+EIGENVAL
+OUTCAR
+OSZICAR
+XDATCAR
+PCDAT
+REPORT
+IBZKPT
+CONTCAR
+POSCAR
+POTCAR
+INCAR
+KPOINTS
+PDOS_*.dat
+IPDOS_*.dat
+TDOS.dat
+ITDOS.dat
+BAND_CENTER
+D_BAND_CENTER
+
+# Local reports and exported figures
+import.log
+图片导出测试/
+*.csv
+*.png
+*.pdf
+*.svg
+!assets/*.png
+
+# OS metadata
+.DS_Store
+Thumbs.db

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools >= 64.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "dband-studio"
+version = "1.0.0"
+description = "DBand Studio — VASP DFT calculation data processing tool for d-band center analysis"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "D-Band Center Analyzer Team"},
+]
+keywords = ["VASP", "DFT", "d-band center", "PDOS", "materials science"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: Microsoft :: Windows",
+]
+
+dependencies = [
+    "numpy>=1.24",
+    "pymatgen>=2024.1",
+    "PySide6>=6.5",
+    "matplotlib>=3.7",
+    "lxml>=4.9",   # vasprun.xml parser; not a transitive pymatgen dependency
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.gui-scripts]
+d-band-center = "main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "models*", "utils*", "ui*"]
+exclude = ["tests*", "__pycache__*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

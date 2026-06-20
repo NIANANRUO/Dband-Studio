@@ -1,0 +1,12 @@
+# D-Band Center Analyzer — Python dependencies
+# Install: pip install -r requirements.txt
+
+pymatgen>=2024.1.27
+numpy>=1.24.0
+PySide6>=6.5.0
+matplotlib>=3.7.0
+lxml>=4.9.0   # vasprun.xml parser (core/parsers/vasprun.py). NOT a hard pymatgen dep.
+
+# Note: numba JIT acceleration was removed in v4.0.
+# Pure-NumPy trapezoidal integration is sub-millisecond for DOS-scale arrays
+# and avoids numba/llvmlite packaging conflicts with PyInstaller + numpy 2.0.
