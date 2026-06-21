@@ -43,6 +43,9 @@ def runtime_preflight():
     from scipy.special import erf
     from pymatgen.core import Element
     from lxml import etree
+    from PySide6 import QtCore, QtGui, QtSvg, QtWidgets
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 
     integral = simpson(np.array([0.0, 1.0, 4.0]), x=np.array([0.0, 1.0, 2.0]))
     if not np.isfinite(integral):
@@ -53,6 +56,10 @@ def runtime_preflight():
         raise RuntimeError("pymatgen periodic-table data preflight failed.")
     if etree.fromstring(b"<vasprun/>").tag != "vasprun":
         raise RuntimeError("lxml XML preflight failed.")
+    if not all((QtCore, QtGui, QtSvg, QtWidgets)):
+        raise RuntimeError("PySide6 Qt runtime preflight failed.")
+    if FigureCanvasQTAgg is None or Figure is None:
+        raise RuntimeError("Matplotlib Qt backend preflight failed.")
 
 
 def main():
