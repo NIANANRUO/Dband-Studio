@@ -498,6 +498,21 @@ class HybridizationWindow(QMainWindow):
         self._request_token += 1
         self._cached_data = None
         self._has_plot_data = False
+        # Never leave a plot on screen once its file, atom selection, or
+        # orbitals changed: that would make old DOS look like fresh data.
+        for ax in (self._ax_top, self._ax_mid, self._ax_bot):
+            ax.clear()
+        self.fig.suptitle("Input changed — generate a new hybridization analysis", fontsize=11)
+        self.canvas.draw_idle()
+
+        from PySide6.QtWidgets import QTableWidgetItem
+        self.table_dist.clearSpans()
+        self.table_dist.setRowCount(1)
+        item = QTableWidgetItem("Input changed — regenerate before interpreting bond lengths")
+        item.setTextAlignment(Qt.AlignCenter)
+        self.table_dist.setItem(0, 0, item)
+        self.table_dist.setSpan(0, 0, 1, 3)
+        self.btn_export_dist.setEnabled(False)
         self.statusBar().showMessage(
             "Fragment input changed. Generate a new analysis before interpreting the plot."
         )
