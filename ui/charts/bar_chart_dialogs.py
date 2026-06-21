@@ -4,7 +4,25 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from ui.widgets.floating_dialog_base import FloatingConfigDialog
+from ui.widgets.checkable_combo import CheckableComboBox
 from utils.styling import THEMES_CONFIG
+
+
+class BarChartDataDialog(FloatingConfigDialog):
+    """Select which calculated systems are visible in the comparison chart."""
+
+    real_time_update = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(title="Data Control", parent=parent)
+        layout = self.content_layout
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Systems:"))
+        self.combo_systems = CheckableComboBox()
+        self.combo_systems.setMinimumWidth(150)
+        self.combo_systems.selection_changed.connect(self.real_time_update.emit)
+        row.addWidget(self.combo_systems)
+        layout.addLayout(row)
 
 class BarChartPatternDialog(FloatingConfigDialog):
     real_time_update = Signal()

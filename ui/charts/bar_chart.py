@@ -12,7 +12,7 @@ from matplotlib.backends.backend_qtagg import NavigationToolbar2QT
 
 from utils.styling import BAR_COLORS
 from ui.charts.bar_chart_dialogs import (
-    BarChartPatternDialog, BarChartLabelsDialog,
+    BarChartDataDialog, BarChartPatternDialog, BarChartLabelsDialog,
     BarChartAxesDialog, BarChartLegendDialog
 )
 
@@ -27,6 +27,7 @@ class BarChartWidget(QWidget):
         self._is_building = True
         self._prev_n_labels = 0
         self._prev_n_ranges = 0
+        self._rendered_labels = []
         self._build_ui()
         # Debounce timer: coalesce rapid control changes into a single redraw
         # to prevent event-loop starvation when dragging sliders.
@@ -41,11 +42,13 @@ class BarChartWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         # Instantiate floating dialogs
+        self.data_dlg = BarChartDataDialog(self)
         self.pattern_dlg = BarChartPatternDialog(self)
         self.labels_dlg = BarChartLabelsDialog(self)
         self.axes_dlg = BarChartAxesDialog(self)
         self.legend_dlg = BarChartLegendDialog(self)
         
+        self.data_dlg.real_time_update.connect(self._trigger_update)
         self.pattern_dlg.applied.connect(self._trigger_update)
         self.pattern_dlg.real_time_update.connect(self._trigger_update)
         self.labels_dlg.applied.connect(self._trigger_update)
@@ -61,6 +64,10 @@ class BarChartWidget(QWidget):
         toolbar_layout = QHBoxLayout(self.toolbar_widget)
         toolbar_layout.setContentsMargins(0, 0, 0, 0)
         toolbar_layout.setSpacing(4)
+
+        btn_data = QPushButton("📊 Data")
+        btn_data.clicked.connect(self.data_dlg.show)
+        toolbar_layout.addWidget(btn_data)
         
         btn_pattern = QPushButton("🎨 Pattern")
         btn_pattern.clicked.connect(self.pattern_dlg.show)
@@ -149,6 +156,21 @@ class BarChartWidget(QWidget):
     #  Main chart rendering
     # ------------------------------------------------------------------ #
 
+    def _sync_system_selector(self, results_data):
+        """Refresh available labels without discarding valid user selections."""
+        labels = list(dict.fromkeys(d.label for d in results_data))
+        combo = self.data_dlg.combo_systems
+        had_items = combo.count() > 0
+        previous_checked = set(combo.get_checked_items())
+        previous_labels = {combo.itemText(i) for i in range(combo.count())}
+
+        combo.blockSignals(True)
+        combo.clear_items()
+        for label in labels:
+            checked = True if not had_items or label not in previous_labels else label in previous_checked
+            combo.add_item(label, checked=checked)
+        combo.blockSignals(False)
+
     def update_chart(self, results_data):
         """Rebuild the bar chart from *results_data*.
 
@@ -159,26 +181,33 @@ class BarChartWidget(QWidget):
         # label auto-adjustment fires when the number of bars changes
         # substantially, not only on the very first render.
         is_first_load = (self._current_data is None and results_data is not None)
-        self._current_data = results_data
+        self._current_data = list(results_data or [])
+        self._sync_system_selector(self._current_data)
+
+        selected_labels = set(self.data_dlg.combo_systems.get_checked_items())
+        render_data = [d for d in self._current_data if d.label in selected_labels]
+        self._rendered_labels = list(dict.fromkeys(d.label for d in render_data))
 
         self.fig.clear()
-        if not results_data:
+        if not render_data:
             self.canvas.draw()
             return
 
-        labels = list(dict.fromkeys(d.label for d in results_data))
-        ranges = list(dict.fromkeys(d.range_name for d in results_data))
+        labels = self._rendered_labels
+        ranges = list(dict.fromkeys(d.range_name for d in render_data))
 
-        n_labels = len(labels)
-        n_ranges = len(ranges)
+        render_n_labels = len(labels)
+        render_n_ranges = len(ranges)
+        auto_n_labels = len(dict.fromkeys(d.label for d in self._current_data))
+        auto_n_ranges = len(dict.fromkeys(d.range_name for d in self._current_data))
         data_changed = (
-            n_labels != self._prev_n_labels or
-            n_ranges != self._prev_n_ranges
+            auto_n_labels != self._prev_n_labels or
+            auto_n_ranges != self._prev_n_ranges
         )
         if is_first_load or data_changed:
-            self._auto_set_labels_based_on_data(n_labels, n_ranges)
-        self._prev_n_labels = n_labels
-        self._prev_n_ranges = n_ranges
+            self._auto_set_labels_based_on_data(auto_n_labels, auto_n_ranges)
+        self._prev_n_labels = auto_n_labels
+        self._prev_n_ranges = auto_n_ranges
 
         # --- Read UI States ---
         # Pattern
@@ -221,19 +250,19 @@ class BarChartWidget(QWidget):
         # --- Drawing ---
         ax = self.fig.add_subplot(111)
 
-        x = np.arange(n_labels)
+        x = np.arange(render_n_labels)
         
-        if n_ranges:
+        if render_n_ranges:
             # We want total group width to be b_width.
             # There are n_ranges bars and (n_ranges - 1) gaps.
             # Total width = n_ranges * w + (n_ranges - 1) * w * bar_gap_pct
             # w = b_width / (n_ranges + (n_ranges - 1) * bar_gap_pct)
-            w = b_width / (n_ranges + (n_ranges - 1) * bar_gap_pct)
+            w = b_width / (render_n_ranges + (render_n_ranges - 1) * bar_gap_pct)
         else:
             w = 0.5
 
         # Pre-compute label offset from data range so labels don't touch bars
-        _all_centers = [d.center for d in results_data if np.isfinite(d.center)]
+        _all_centers = [d.center for d in render_data if np.isfinite(d.center)]
         _y_range = max(_all_centers) - min(_all_centers) if len(_all_centers) > 1 else 4.0
         _y_range = max(_y_range, 1e-6)
         _label_pad = _y_range * 0.04  # 4% of Y range as visual gap
@@ -242,7 +271,7 @@ class BarChartWidget(QWidget):
             centers = []
             for lb in labels:
                 v = next(
-                    (d.center for d in results_data
+                    (d.center for d in render_data
                      if d.label == lb and d.range_name == rn),
                     np.nan,
                 )
