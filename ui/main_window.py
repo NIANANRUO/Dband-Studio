@@ -501,6 +501,12 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(1)
 
     # ---------- calculation ----------
+    @staticmethod
+    def _calculation_status_text(current, total, method):
+        """Human-readable provenance for a live calculation task."""
+        method_name = "Simpson (SciPy)" if method == "simpson" else "Trapezoid (NumPy)"
+        return f"Calculating {current}/{total} file(s) using {method_name}..."
+
     def run_calculation(self):
         if not self.state.file_entries:
             QMessageBox.warning(self, "Warning", "Add files first.")
@@ -511,6 +517,7 @@ class MainWindow(QMainWindow):
         spin = self.param_panel.get_spin_mode()
         do_all, do_fermi, do_custom, custom_range = self.param_panel.get_range_config()
         integration_method = self.param_panel.get_integration_method()
+        self._active_integration_method = integration_method
 
         # Sync integration method to chart widgets so center annotations match table
         self.pdos_chart.set_integration_method(integration_method)
@@ -546,6 +553,9 @@ class MainWindow(QMainWindow):
         self._progress.setValue(0)
 
         self._worker.progress.connect(self._progress.setValue)
+        self._worker.progress.connect(
+            lambda current, total: self.statusBar().showMessage(
+                self._calculation_status_text(current, total, integration_method)))
         self._worker.file_done.connect(
             lambda lbl: self._progress.setLabelText(f"Completed: {lbl}"))
         self._worker.file_error.connect(self._on_worker_file_error)
@@ -613,7 +623,8 @@ class MainWindow(QMainWindow):
         n_ok = len(self.state.file_entries) - self._error_count
         self.statusBar().showMessage(
             f"Done — {n_ok}/{len(self.state.file_entries)} files, "
-            f"{len(self.state.results_data)} result rows.")
+            f"{len(self.state.results_data)} result rows "
+            f"({ 'Simpson (SciPy)' if self._active_integration_method == 'simpson' else 'Trapezoid (NumPy)' }).")
 
     # ---------- export ----------
     def export_csv(self):
