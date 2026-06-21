@@ -8,10 +8,17 @@ Output: dist/DBandStudio/DBandStudio.exe
 import os
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_data_files
 
-# Project root (one level up from installer/)
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# PyInstaller executes spec files through ``exec`` and does not define
+# ``__file__``. ``SPECPATH`` is the supported path supplied by PyInstaller.
+# The project root is one directory above installer/.
+PROJECT_ROOT = Path(SPECPATH).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+# pymatgen loads reference JSON/YAML resources dynamically (for example
+# core/periodic_table.json.gz); hidden imports alone do not include them.
+PYMATGEN_DATA = collect_data_files('pymatgen')
 
 a = Analysis(
     [str(PROJECT_ROOT / 'main.py')],
@@ -19,7 +26,9 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(PROJECT_ROOT / 'config' / 'themes.json'), 'config'),
-    ],
+        # Runtime UI resources are resolved relative to the frozen bundle.
+        (str(PROJECT_ROOT / 'assets'), 'assets'),
+    ] + PYMATGEN_DATA,
     hiddenimports=[
         # pymatgen — lazy-loaded, must be explicit
         'pymatgen',

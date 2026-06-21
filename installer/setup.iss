@@ -3,7 +3,7 @@
 ; Output: dist/DBandStudio_Setup.exe
 
 #define AppName       "DBand Studio"
-#define AppVersion    "1.0.0"
+#define AppVersion    "1.1.0"
 #define AppPublisher  "D-Band Center Analyzer"
 #define AppURL        ""
 #define AppExeName    "DBandStudio.exe"
@@ -30,7 +30,6 @@ UninstallDisplayIcon={app}\{#AppExeName}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
-Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加图标:"; Flags: checkedonce
