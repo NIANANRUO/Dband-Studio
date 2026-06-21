@@ -614,7 +614,35 @@ class TestHybridizationCacheIsolation:
         assert reparse_calls[0][0] == "/NEW.xml"
         assert np.allclose(r_up["dxy"], 9.0)
 
-    def test_shared_cache_hit_when_filepath_matches(self):
+    def test_shared_cache_rejects_missing_file_fingerprint(self):
+        """Legacy cache entries cannot prove that an overwritten file is unchanged."""
+        import numpy as np
+        from unittest import mock
+
+        worker = self._make_worker()
+        worker._local_cache = {}
+        energy = np.linspace(-5, 5, 50)
+        worker._shared_cache = {
+            "X": {
+                "atoms": "1",
+                "filepath": "/SAME.xml",
+                "energy": energy, "ef": 0.0,
+                "up": {"dxy": np.full(50, 7.0)},
+                "down": {"dxy": np.zeros(50)},
+                "has_spin": False,
+            }
+        }
+        params = ("X", "/SAME.xml", "1", ["dxy"], "up", "X-alias")
+
+        with mock.patch("core.services.hybridization_worker.DataLoader") as MockLoader:
+            MockLoader.load_spin_all.return_value = (
+                energy, {"dxy": np.full(50, 9.0)}, {"dxy": np.zeros(50)}, {}, 0.0)
+            _, r_up, _, _, _ = worker._parse_with_cache(params)
+
+        assert MockLoader.load_spin_all.call_count == 1
+        assert np.allclose(r_up["dxy"], 9.0)
+
+    def test_shared_cache_hit_when_filepath_and_fingerprint_match(self):
         import numpy as np
         from unittest import mock
 
@@ -625,6 +653,7 @@ class TestHybridizationCacheIsolation:
             "X": {
                 "atoms": "1",
                 "filepath": "/SAME.xml",   # matches the request
+                "file_fingerprint": (0, 0),  # nonexistent test path
                 "energy": energy, "ef": 0.0,
                 "up": {"dxy": np.full(50, 7.0)},
                 "down": {"dxy": np.zeros(50)},

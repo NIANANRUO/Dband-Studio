@@ -16,6 +16,7 @@ from PySide6.QtCore import QThread, Signal
 from core.loader import DataLoader
 from core.exceptions import DbandError, FileTypeError
 from core.parsers.common import _detect_has_spin
+from core.services.file_identity import file_fingerprint
 
 
 @dataclass(frozen=True)
@@ -125,7 +126,7 @@ class HybridizationWorker(QThread):
     def _parse_with_cache(self, params: Tuple) -> Tuple:
         """Parse a fragment, using cache if available.
 
-        Cache key: (filepath, mtime, atoms, spin, sorted_orbitals).
+        Cache key: (filepath, fingerprint, atoms, spin, sorted_orbitals).
 
         ``mtime`` is included so that a file replaced in place (same path,
         new contents — e.g. a re-run VASP calculation overwriting the old
@@ -138,14 +139,8 @@ class HybridizationWorker(QThread):
         if not orbitals:
             raise ValueError("Please select at least one orbital.")
 
-        # Best-effort mtime: 0 if the file is gone (treat as uncached-via-mtime
-        # but still keyed by the path, which is the strongest signal available).
-        try:
-            mtime = int(os.path.getmtime(fp))
-        except OSError:
-            mtime = 0
-
-        cache_key = (fp, mtime, atoms, spin, tuple(sorted(orbitals)))
+        fingerprint = file_fingerprint(fp)
+        cache_key = (fp, fingerprint, atoms, spin, tuple(sorted(orbitals)))
 
         # Check local cache first
         if cache_key in self._local_cache:
@@ -167,7 +162,9 @@ class HybridizationWorker(QThread):
         # skipped, falling through to a correct full re-parse.
         if self._shared_cache is not None and label in self._shared_cache:
             entry = self._shared_cache[label]
-            if entry.get("atoms") == atoms and entry.get("filepath") == fp:
+            if (entry.get("atoms") == atoms
+                    and entry.get("filepath") == fp
+                    and entry.get("file_fingerprint") == fingerprint):
                 energy = entry["energy"]
                 ef = entry["ef"]
                 rho_up_full = entry["up"]
