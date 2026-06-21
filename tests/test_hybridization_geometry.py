@@ -110,6 +110,28 @@ def test_hybridization_window_discards_cached_plot_when_source_changes(qapp):
     window.close()
 
 
+def test_hybridization_window_clears_visible_stale_plot_when_source_changes(qapp):
+    """The old DOS curve must disappear as soon as its source stops matching."""
+    from models.app_state import AppState
+    from ui.hybridization_win import HybridizationWindow
+
+    state = AppState()
+    state.file_entries = [
+        {"label": "DOSCAR", "path": r"D:\calc\DOSCAR"},
+        {"label": "vasprun.xml", "path": r"D:\calc\vasprun.xml"},
+    ]
+    window = HybridizationWindow(state)
+    window._ax_top.plot([0.0, 1.0], [0.0, 1.0])
+    window._has_plot_data = True
+    window._cached_data = (object(), object())
+
+    window.frag1.combo_file.setCurrentIndex(1)
+
+    assert not window._ax_top.lines
+    assert "input changed" in window.statusBar().currentMessage().lower()
+    window.close()
+
+
 def test_distance_table_handles_a_task_without_geometry_request(qapp):
     """A DOS-only task must not crash while updating the geometry table."""
     from core.services.hybridization_worker import GeometryAnalysisResult

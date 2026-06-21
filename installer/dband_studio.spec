@@ -8,7 +8,7 @@ Output: dist/DBandStudio/DBandStudio.exe
 import os
 import sys
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_data_files
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs
 
 # PyInstaller executes spec files through ``exec`` and does not define
 # ``__file__``. ``SPECPATH`` is the supported path supplied by PyInstaller.
@@ -19,11 +19,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # pymatgen loads reference JSON/YAML resources dynamically (for example
 # core/periodic_table.json.gz); hidden imports alone do not include them.
 PYMATGEN_DATA = collect_data_files('pymatgen')
+# Simpson imports compiled SciPy extensions at runtime in a frozen app.
+SCIPY_BINARIES = collect_dynamic_libs('scipy')
 
 a = Analysis(
     [str(PROJECT_ROOT / 'main.py')],
     pathex=[str(PROJECT_ROOT)],
-    binaries=[],
+    binaries=SCIPY_BINARIES,
     datas=[
         (str(PROJECT_ROOT / 'config' / 'themes.json'), 'config'),
         # Runtime UI resources are resolved relative to the frozen bundle.
@@ -64,6 +66,9 @@ a = Analysis(
         # lxml — used by vasprun.xml parser
         'lxml.etree',
         'lxml._elementpath',
+        'scipy.integrate',
+        'scipy.special',
+        'scipy.special._ufuncs_cxx',
     ],
     hookspath=[],
     hooksconfig={},
@@ -76,7 +81,6 @@ a = Analysis(
         'numba.core',
         'scipy.stats',
         'scipy.spatial',
-        'scipy.special._ufuncs_cxx',
         'IPython',
         'jupyter',
         'jupyter_client',
