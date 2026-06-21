@@ -79,8 +79,6 @@ a = Analysis(
         # scipy/pymatgen from inflating the bundle by ~80 MB.
         'numba',
         'numba.core',
-        'scipy.stats',
-        'scipy.spatial',
         'IPython',
         'jupyter',
         'jupyter_client',

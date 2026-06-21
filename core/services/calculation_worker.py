@@ -16,6 +16,7 @@ from core.exceptions import (
 from core.parsers import d_orb_names
 from core.parsers.common import _detect_has_spin
 from core.calculator import calc_metrics
+from core.services.file_identity import file_fingerprint
 from models.results import DbandResult
 
 
@@ -117,6 +118,7 @@ class CalculationWorker(QThread):
                 parsed_cache[label] = {
                     "atoms": current_atoms,
                     "filepath": fp,
+                    "file_fingerprint": file_fingerprint(fp),
                     "energy": energy,
                     "ef": ef,
                     "up": rho_up,

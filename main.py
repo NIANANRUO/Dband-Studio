@@ -30,7 +30,36 @@ logging.basicConfig(
 )
 
 
+def runtime_preflight():
+    """Load and exercise every binary dependency required by release builds.
+
+    This path deliberately creates no QApplication, so the frozen executable
+    can be checked non-interactively in CI or before sharing an installer.
+    An import-only check is insufficient for SciPy because some extension
+    modules are loaded only when the numerical function is called.
+    """
+    import numpy as np
+    from scipy.integrate import simpson
+    from scipy.special import erf
+    from pymatgen.core import Element
+    from lxml import etree
+
+    integral = simpson(np.array([0.0, 1.0, 4.0]), x=np.array([0.0, 1.0, 2.0]))
+    if not np.isfinite(integral):
+        raise RuntimeError("SciPy Simpson preflight returned a non-finite value.")
+    if not np.isfinite(erf(1.0)):
+        raise RuntimeError("SciPy special-function preflight returned a non-finite value.")
+    if Element("Mo").Z != 42:
+        raise RuntimeError("pymatgen periodic-table data preflight failed.")
+    if etree.fromstring(b"<vasprun/>").tag != "vasprun":
+        raise RuntimeError("lxml XML preflight failed.")
+
+
 def main():
+    if "--runtime-self-check" in sys.argv:
+        runtime_preflight()
+        return 0
+
     # QApplication must be created before any QWidget
     app = QApplication(sys.argv)
     
@@ -74,8 +103,8 @@ def main():
 
     splash.close()
     win.show()
-    sys.exit(app.exec())
+    return app.exec()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
