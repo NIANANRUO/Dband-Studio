@@ -562,19 +562,19 @@ class HybridizationWindow(QMainWindow):
 
         self._worker = HybridizationWorker(
             p1, p2, geom_params, self._parsed_cache, self.state.parsed_cache, parent=self)
+        self._worker.request_token = request_token
         self._worker.progress.connect(self.statusBar().showMessage)
-        self._worker.result_ready.connect(
-            lambda data1, data2, geometry_result, token=request_token:
-            self._on_data_ready(token, data1, data2, geometry_result))
-        self._worker.error_occurred.connect(
-            lambda err_type, message, token=request_token:
-            self._on_parse_error_if_current(token, err_type, message))
+        # Bound QObject slots are queued onto this window's GUI thread.  Do
+        # not replace these with lambdas: a lambda executes in the worker
+        # thread and makes matplotlib/Qt rendering hang or crash.
+        self._worker.result_ready.connect(self._on_data_ready)
+        self._worker.error_occurred.connect(self._on_parse_error_if_current)
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
 
-    def _on_data_ready(self, request_token, data1, data2, geometry_result):
+    def _on_data_ready(self, data1, data2, geometry_result):
         """Background parse complete — render on main thread (~10ms)."""
-        if request_token != self._request_token:
+        if self._worker is None or self._worker.request_token != self._request_token:
             self.statusBar().showMessage(
                 "Discarded stale analysis result after fragment input changed."
             )
@@ -686,9 +686,9 @@ class HybridizationWindow(QMainWindow):
         else:
             QMessageBox.critical(self, "Unexpected Error", message)
 
-    def _on_parse_error_if_current(self, request_token, err_type, message):
+    def _on_parse_error_if_current(self, err_type, message):
         """Suppress errors from a worker invalidated by newer fragment input."""
-        if request_token == self._request_token:
+        if self._worker is not None and self._worker.request_token == self._request_token:
             self._on_parse_error(err_type, message)
 
     def _on_worker_finished(self):

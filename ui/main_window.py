@@ -453,6 +453,16 @@ class MainWindow(QMainWindow):
         self.file_panel.clear_requested.connect(self._on_clear_all)
         self.results_table.row_selected.connect(self._on_result_row_selected)
         self.pdos_chart.system_requested.connect(self._on_pdos_system_requested)
+        self.param_panel.combo_method.currentIndexChanged.connect(
+            self._on_integration_method_changed)
+
+    def _on_integration_method_changed(self, _index):
+        """Make old table/plot values visibly stale after a method change."""
+        method = self.param_panel.get_integration_method()
+        method_name = "Simpson (SciPy)" if method == "simpson" else "Trapezoid (NumPy)"
+        self.statusBar().showMessage(
+            f"Integration changed to {method_name}. Run Calculation to refresh all results."
+        )
 
     def _on_pdos_system_requested(self, label):
         table = self.results_table.data_table

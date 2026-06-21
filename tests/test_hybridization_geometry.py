@@ -1,6 +1,7 @@
 """Regression tests for hybridization task state and geometry diagnostics."""
 
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -131,10 +132,9 @@ def test_hybridization_discards_a_completed_stale_worker_callback(qapp):
 
     window = HybridizationWindow(AppState())
     window._request_token = 4
+    window._worker = SimpleNamespace(request_token=3)
 
-    window._on_data_ready(
-        3, object(), object(), GeometryAnalysisResult(None)
-    )
+    window._on_data_ready(object(), object(), GeometryAnalysisResult(None))
 
     assert window._has_plot_data is False
     assert window._cached_data is None
@@ -149,3 +149,16 @@ def test_main_calculation_status_identifies_the_selected_quadrature():
 
     assert "1/2" in message
     assert "Simpson" in message
+
+
+def test_main_window_marks_results_stale_when_integration_method_changes(qapp):
+    """A method change must not leave a previous trapezoid result looking current."""
+    from ui.main_window import MainWindow
+
+    window = MainWindow()
+    window.param_panel.combo_method.setCurrentIndex(1)
+
+    message = window.statusBar().currentMessage()
+    assert "Simpson" in message
+    assert "Run" in message
+    window.close()
