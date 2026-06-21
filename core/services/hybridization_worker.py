@@ -7,6 +7,7 @@ Uses a shared cache to avoid re-parsing the same file on theme/range changes.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -15,6 +16,44 @@ from PySide6.QtCore import QThread, Signal
 from core.loader import DataLoader
 from core.exceptions import DbandError, FileTypeError
 from core.parsers.common import _detect_has_spin
+
+
+@dataclass(frozen=True)
+class GeometryAnalysisResult:
+    """Geometry output plus an honest explanation when it cannot be computed."""
+
+    pairs: Optional[List[Tuple[str, str, float]]]
+    diagnostic: Optional[str] = None
+
+
+def geometry_input_diagnostic(filepath1: str, filepath2: str) -> Optional[str]:
+    """Return why a shared vasprun geometry calculation is unavailable.
+
+    Bond distances are only physically meaningful when both fragments refer to
+    the same structure embedded in one vasprun.xml file.  The previous UI
+    collapsed every rejection into "requires vasprun.xml", which hid the
+    selected files and made scientific diagnosis impossible.
+    """
+    if not filepath1 or not filepath2:
+        return "Bond lengths require a selected source file for both fragments."
+
+    is_xml1 = filepath1.lower().endswith(".xml")
+    is_xml2 = filepath2.lower().endswith(".xml")
+    if not (is_xml1 and is_xml2):
+        return (
+            "Bond lengths require both fragments to use the same vasprun.xml; "
+            f"selected: '{os.path.basename(filepath1)}' and "
+            f"'{os.path.basename(filepath2)}'."
+        )
+
+    normalized1 = os.path.normcase(os.path.abspath(filepath1))
+    normalized2 = os.path.normcase(os.path.abspath(filepath2))
+    if normalized1 != normalized2:
+        return (
+            "Bond lengths require both fragments to use the same vasprun.xml; "
+            f"selected: '{filepath1}' and '{filepath2}'."
+        )
+    return None
 
 
 class HybridizationWorker(QThread):
@@ -26,6 +65,7 @@ class HybridizationWorker(QThread):
     """
     result_ready = Signal(object, object, object)
     error_occurred = Signal(str, str)
+    progress = Signal(str)
 
     def __init__(
         self,
@@ -45,6 +85,7 @@ class HybridizationWorker(QThread):
 
     def run(self):
         try:
+            self.progress.emit("Parsing selected fragment DOS data...")
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=2) as executor:
                 future1 = executor.submit(self._parse_with_cache, self.p1)
@@ -52,7 +93,7 @@ class HybridizationWorker(QThread):
                 data1 = future1.result()
                 data2 = future2.result()
             
-            distance_results = None
+            geometry_result = GeometryAnalysisResult(None)
             if self.geom_params is not None:
                 _, fp1, atoms1, _, _, _ = self.p1
                 _, fp2, atoms2, _, _, _ = self.p2
@@ -63,11 +104,17 @@ class HybridizationWorker(QThread):
                     cutoff, mode = self.geom_params
                     b_atoms1, b_atoms2 = atoms1, atoms2
                 
-                if fp1 and fp2 and fp1 == fp2 and fp1.lower().endswith(".xml"):
+                diagnostic = geometry_input_diagnostic(fp1, fp2)
+                if diagnostic is None:
+                    self.progress.emit("Calculating bond lengths from vasprun.xml...")
                     from core.parsers.vasprun import get_vasprun_distances
-                    distance_results = get_vasprun_distances(fp1, b_atoms1, b_atoms2, cutoff, mode)
+                    pairs = get_vasprun_distances(fp1, b_atoms1, b_atoms2, cutoff, mode)
+                    geometry_result = GeometryAnalysisResult(pairs)
+                else:
+                    geometry_result = GeometryAnalysisResult(None, diagnostic)
 
-            self.result_ready.emit(data1, data2, distance_results)
+            self.progress.emit("Rendering hybridization plot...")
+            self.result_ready.emit(data1, data2, geometry_result)
         except (FileTypeError, DbandError) as e:
             self.error_occurred.emit(type(e).__name__, str(e))
         except ValueError as e:

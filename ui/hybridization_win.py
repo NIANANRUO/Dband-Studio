@@ -41,6 +41,7 @@ from ui.widgets.collapsible import CollapsibleWidget
 class FragmentPanel(QFrame):
     """Panel for defining one fragment (Metal or Ligand)."""
     orbitals_changed = Signal()
+    input_changed = Signal()
 
     def __init__(self, title, state, parent=None):
         super().__init__(parent)
@@ -85,12 +86,14 @@ class FragmentPanel(QFrame):
         row_src = QHBoxLayout()
         row_src.addWidget(QLabel("Data Source:"))
         self.combo_file = QComboBox()
+        self.combo_file.currentIndexChanged.connect(lambda _index: self.input_changed.emit())
         row_src.addWidget(self.combo_file)
         layout.addLayout(row_src)
 
         row_atoms = QHBoxLayout()
         row_atoms.addWidget(QLabel("Atoms:"))
         self.entry_atoms = QLineEdit()
+        self.entry_atoms.textChanged.connect(lambda _text: self.input_changed.emit())
         row_atoms.addWidget(self.entry_atoms)
         layout.addLayout(row_atoms)
 
@@ -169,6 +172,7 @@ class HybridizationWindow(QMainWindow):
         self._parsed_cache = {}
         self._cached_data = None
         self._has_plot_data = False
+        self._request_token = 0
         self._is_dark_mode = False
         self._integration_method = "trapezoid"
         self._build_ui()
@@ -396,6 +400,12 @@ class HybridizationWindow(QMainWindow):
 
         left_vbox.addWidget(self.left_tabs)
 
+        # Source/atom/orbital changes invalidate prior DOS arrays.  Reusing an
+        # old plot after such a change would be a scientifically false result.
+        self.frag1.input_changed.connect(self._on_fragment_input_changed)
+        self.frag2.input_changed.connect(self._on_fragment_input_changed)
+        self.frag1.orbitals_changed.connect(self._on_fragment_input_changed)
+        self.frag2.orbitals_changed.connect(self._on_fragment_input_changed)
         self.frag1.orbitals_changed.connect(self._update_mid_themes)
         self.frag2.orbitals_changed.connect(self._update_bot_themes)
         self._update_mid_themes()
@@ -483,6 +493,15 @@ class HybridizationWindow(QMainWindow):
         else:
             self.statusBar().showMessage("Waiting for plot generation...")
 
+    def _on_fragment_input_changed(self):
+        """Prevent stale DOS/annotations from surviving an input mutation."""
+        self._request_token += 1
+        self._cached_data = None
+        self._has_plot_data = False
+        self.statusBar().showMessage(
+            "Fragment input changed. Generate a new analysis before interpreting the plot."
+        )
+
     def _get_spin_mode(self):
         text = self.combo_spin.currentText()
         if text == "Spin-Up":
@@ -529,41 +548,69 @@ class HybridizationWindow(QMainWindow):
         
         geom_params = (cutoff, mode, b_atoms1, b_atoms2)
 
+        # Every calculation owns one immutable request token.  If the user
+        # changes an input while a worker is parsing, its callback is stale and
+        # must never overwrite the newer scientific context.
+        self._request_token += 1
+        request_token = self._request_token
+        self._cached_data = None
+        self._has_plot_data = False
+
         self.btn_plot.setEnabled(False)
         self.btn_plot.setText("Analyzing...")
         self.statusBar().showMessage("Parsing data and calculating geometry in background...")
 
         self._worker = HybridizationWorker(
             p1, p2, geom_params, self._parsed_cache, self.state.parsed_cache, parent=self)
-        self._worker.result_ready.connect(self._on_data_ready)
-        self._worker.error_occurred.connect(self._on_parse_error)
+        self._worker.progress.connect(self.statusBar().showMessage)
+        self._worker.result_ready.connect(
+            lambda data1, data2, geometry_result, token=request_token:
+            self._on_data_ready(token, data1, data2, geometry_result))
+        self._worker.error_occurred.connect(
+            lambda err_type, message, token=request_token:
+            self._on_parse_error_if_current(token, err_type, message))
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
 
-    def _on_data_ready(self, data1, data2, distance_results):
+    def _on_data_ready(self, request_token, data1, data2, geometry_result):
         """Background parse complete — render on main thread (~10ms)."""
+        if request_token != self._request_token:
+            self.statusBar().showMessage(
+                "Discarded stale analysis result after fragment input changed."
+            )
+            return
         self._cached_data = (data1, data2)
         self._has_plot_data = True
         self._render_plot(data1, data2)
-        self._update_distance_table(distance_results)
+        self._update_distance_table(geometry_result)
         self.statusBar().showMessage("Hybridization plot and geometry analysis generated.")
         
-    def _update_distance_table(self, distance_results):
+    def _update_distance_table(self, geometry_result):
         from PySide6.QtWidgets import QTableWidgetItem
         from PySide6.QtCore import Qt
         
         self.table_dist.setRowCount(0)
         
-        if distance_results is None:
-            # Different files or not XML
+        if geometry_result.diagnostic is not None:
             self.table_dist.setRowCount(1)
-            item = QTableWidgetItem("N/A - Requires same vasprun.xml for both fragments")
+            item = QTableWidgetItem(geometry_result.diagnostic)
             item.setTextAlignment(Qt.AlignCenter)
             self.table_dist.setItem(0, 0, item)
             self.table_dist.setSpan(0, 0, 1, 3)
             self.btn_export_dist.setEnabled(False)
             return
-            
+
+        distance_results = geometry_result.pairs
+
+        if distance_results is None:
+            self.table_dist.setRowCount(1)
+            item = QTableWidgetItem("Geometry analysis was not requested for this task")
+            item.setTextAlignment(Qt.AlignCenter)
+            self.table_dist.setItem(0, 0, item)
+            self.table_dist.setSpan(0, 0, 1, 3)
+            self.btn_export_dist.setEnabled(False)
+            return
+
         if len(distance_results) == 0:
             self.table_dist.setRowCount(1)
             item = QTableWidgetItem("No bonds found within cutoff distance")
@@ -638,6 +685,11 @@ class HybridizationWindow(QMainWindow):
             QMessageBox.warning(self, "Parsing Error", message)
         else:
             QMessageBox.critical(self, "Unexpected Error", message)
+
+    def _on_parse_error_if_current(self, request_token, err_type, message):
+        """Suppress errors from a worker invalidated by newer fragment input."""
+        if request_token == self._request_token:
+            self._on_parse_error(err_type, message)
 
     def _on_worker_finished(self):
         """Re-enable button after worker completes (success or error)."""
