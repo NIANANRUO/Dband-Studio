@@ -3,7 +3,7 @@
 ; Output: dist/DBandStudio_Setup.exe
 
 #define AppName       "DBand Studio"
-#define AppVersion    "1.1.3"
+#define AppVersion    "1.1.4"
 #define AppPublisher  "D-Band Center Analyzer"
 #define AppURL        ""
 #define AppExeName    "DBandStudio.exe"
