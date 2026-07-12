@@ -34,3 +34,15 @@ def test_application_and_installer_versions_match():
     installer_version = re.search(r'#define AppVersion\s+"([^"]+)"', setup).group(1)
 
     assert installer_version == project_version
+
+
+def test_pyproject_uses_importable_setuptools_backend():
+    root = Path(__file__).resolve().parents[1]
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert config["build-system"]["build-backend"] == "setuptools.build_meta:__legacy__"
+
+
+def test_wheel_configuration_includes_gui_entry_module():
+    root = Path(__file__).resolve().parents[1]
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "main" in config["tool"]["setuptools"]["py-modules"]

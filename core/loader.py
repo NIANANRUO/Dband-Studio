@@ -22,7 +22,7 @@ import numpy as np
 
 from core import parsers
 from core.exceptions import FileTypeError, MissingProjectedDOSError
-from core.pdos_metadata import PDOSMetadata
+from core.pdos_metadata import PDOSCapabilities, PDOSInputContext, PDOSMetadata
 
 
 def _ensure_parsers():
@@ -50,6 +50,14 @@ class DataLoader:
         """Register a parser for a file type (extension point for plugins)."""
         cls._parsers[ftype] = parser_func
 
+    @classmethod
+    def _source_parts(
+        cls, source: str | PDOSInputContext,
+    ) -> tuple[str, str, Optional[PDOSInputContext]]:
+        if isinstance(source, PDOSInputContext):
+            return source.primary_path, source.source_format, source
+        return source, cls.detect(source), None
+
     @staticmethod
     def detect(filepath: str) -> str:
         """Detect file type.
@@ -63,9 +71,26 @@ class DataLoader:
         return ftype
 
     @classmethod
+    def inspect(
+        cls, filepath: str | PDOSInputContext, declared_type: Optional[str] = None,
+    ) -> PDOSCapabilities:
+        """Inspect source capabilities without calculating any PDOS metric."""
+        from core.inspection import inspect_source
+
+        if isinstance(filepath, PDOSInputContext):
+            context = filepath
+            source_format = context.source_format
+        else:
+            source_format = declared_type
+            if not source_format or source_format == "Auto Detect":
+                source_format = cls.detect(filepath)
+            context = PDOSInputContext(filepath, source_format)
+        return inspect_source(context)
+
+    @classmethod
     def load(
         cls,
-        filepath: str,
+        filepath: str | PDOSInputContext,
         atoms: str,
         spin: str = "total",
         orbitals: Optional[List[str]] = None,
@@ -75,16 +100,26 @@ class DataLoader:
         Returns: (energy, rho_dict, ef)
         """
         _ensure_parsers()
-        ftype = cls.detect(filepath)
+        path, ftype, context = cls._source_parts(filepath)
+        if ftype == "vasprun.xml":
+            return parsers.parse_vasprun(
+                path, atoms, spin, orbitals=orbitals, input_context=context)
+        if ftype == "DOSCAR":
+            return parsers.parse_doscar(
+                path, atoms, spin, orbitals=orbitals, input_context=context)
+        if ftype == "VASPKIT PDOS":
+            return parsers.parse_vaspkit(
+                path, spin, atoms_str=atoms, orbitals=orbitals,
+                input_context=context)
         parser = cls._parsers.get(ftype)
         if parser is None:
             raise FileTypeError(filepath)
-        return parser(filepath, atoms, spin, orbitals=orbitals)
+        return parser(path, atoms, spin, orbitals=orbitals)
 
     @classmethod
     def load_spin_all(
         cls,
-        filepath: str,
+        filepath: str | PDOSInputContext,
         atoms: str,
         orbitals: Optional[List[str]] = None,
     ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], float]:
@@ -93,14 +128,17 @@ class DataLoader:
         Returns: (energy, rho_up, rho_dn, rho_total, ef)
         """
         _ensure_parsers()
-        ftype = cls.detect(filepath)
+        path, ftype, context = cls._source_parts(filepath)
 
         if ftype == "vasprun.xml":
-            return parsers.parse_vasprun_spin_all(filepath, atoms, orbitals=orbitals)
+            return parsers.parse_vasprun_spin_all(
+                path, atoms, orbitals=orbitals, input_context=context)
         elif ftype == "DOSCAR":
-            return parsers.parse_doscar_spin_all(filepath, atoms, orbitals=orbitals)
+            return parsers.parse_doscar_spin_all(
+                path, atoms, orbitals=orbitals, input_context=context)
         elif ftype == "VASPKIT PDOS":
-            return parsers.parse_vaspkit_spin_all(filepath, atoms, orbitals=orbitals)
+            return parsers.parse_vaspkit_spin_all(
+                path, atoms, orbitals=orbitals, input_context=context)
         # Unknown type — fall back to double load (keeps backward compat for plugins).
         energy, rho_up, ef = cls.load(filepath, atoms, spin="up", orbitals=orbitals)
         _, rho_dn, _ = cls.load(filepath, atoms, spin="down", orbitals=orbitals)
@@ -115,7 +153,7 @@ class DataLoader:
     @classmethod
     def load_spin_all_with_metadata(
         cls,
-        filepath: str,
+        filepath: str | PDOSInputContext,
         atoms: str,
         orbitals: Optional[List[str]] = None,
     ):
@@ -127,22 +165,29 @@ class DataLoader:
         silently presented as a collinear spin channel.
         """
         _ensure_parsers()
-        ftype = cls.detect(filepath)
+        path, ftype, context = cls._source_parts(filepath)
         if ftype == "vasprun.xml":
             return parsers.parse_vasprun_spin_all(
-                filepath, atoms, orbitals=orbitals, return_metadata=True)
+                path, atoms, orbitals=orbitals, return_metadata=True,
+                input_context=context)
         if ftype == "DOSCAR":
             return parsers.parse_doscar_spin_all(
-                filepath, atoms, orbitals=orbitals, return_metadata=True)
+                path, atoms, orbitals=orbitals, return_metadata=True,
+                input_context=context)
 
         energy, rho_up, rho_dn, rho_total, ef = cls.load_spin_all(
             filepath, atoms, orbitals=orbitals)
         has_spin = any(np.any(np.asarray(values) != 0) for values in rho_dn.values())
+        try:
+            capabilities = cls.inspect(filepath, declared_type=ftype)
+        except Exception:
+            capabilities = None
         return (energy, rho_up, rho_dn, rho_total, ef, PDOSMetadata(
             mode="collinear" if has_spin else "nonspin",
             orbital_resolution="lm",
             spin_axis=None,
             source_format=ftype,
+            capabilities=capabilities,
         ))
 
 

@@ -27,6 +27,8 @@ from core.calculator import calc_metrics
 from utils.styling import annotate_center
 from core.services.hybridization_worker import HybridizationWorker
 from core.services.exporter import DataExporter
+from core.loader import DataLoader
+from core.pdos_metadata import input_context_from_entry
 from utils.styling import (
     CENTER_COLOR, CENTER_LW, CENTER_FONTSIZE,
     HYB_FRAG1_COLOR, HYB_FRAG2_COLOR,
@@ -54,17 +56,18 @@ class FragmentPanel(QFrame):
 
     def _make_connections(self, chk_all_btn, check_list):
         def on_all_toggled(checked):
-            for c in check_list:
-                c.blockSignals(True)
-                c.setChecked(checked)
-                c.blockSignals(False)
+            if checked:
+                for c in check_list:
+                    c.blockSignals(True)
+                    c.setChecked(False)
+                    c.blockSignals(False)
             self.orbitals_changed.emit()
             
         def on_indiv_toggled():
-            all_c = all(c.isChecked() for c in check_list)
-            chk_all_btn.blockSignals(True)
-            chk_all_btn.setChecked(all_c)
-            chk_all_btn.blockSignals(False)
+            if any(c.isChecked() for c in check_list):
+                chk_all_btn.blockSignals(True)
+                chk_all_btn.setChecked(False)
+                chk_all_btn.blockSignals(False)
             self.orbitals_changed.emit()
             
         chk_all_btn.toggled.connect(on_all_toggled)
@@ -86,7 +89,7 @@ class FragmentPanel(QFrame):
         row_src = QHBoxLayout()
         row_src.addWidget(QLabel("Data Source:"))
         self.combo_file = QComboBox()
-        self.combo_file.currentIndexChanged.connect(lambda _index: self.input_changed.emit())
+        self.combo_file.currentIndexChanged.connect(self._on_source_changed)
         row_src.addWidget(self.combo_file)
         layout.addLayout(row_src)
 
@@ -97,7 +100,7 @@ class FragmentPanel(QFrame):
         row_atoms.addWidget(self.entry_atoms)
         layout.addLayout(row_atoms)
 
-        self.orbs_widget = CollapsibleWidget("Orbitals")
+        self.orbs_widget = CollapsibleWidget("VASP Projected Orbitals")
         orbs_main_layout = QVBoxLayout()
         orbs_main_layout.setContentsMargins(0, 0, 0, 0)
         orbs_main_layout.setSpacing(6)
@@ -108,7 +111,10 @@ class FragmentPanel(QFrame):
             vbox.setContentsMargins(8, 12, 8, 8)
             vbox.setSpacing(4)
             
-            chk_all = QCheckBox("All")
+            chk_all = QCheckBox(f"{title}-total")
+            self._orbital_checks[title] = chk_all
+            chk_all.setToolTip(
+                f"Merged VASP {title} projection. This is not a principal-quantum-number shell.")
             vbox.addWidget(chk_all)
             
             grid = QGridLayout()
@@ -118,6 +124,8 @@ class FragmentPanel(QFrame):
             checks = []
             row = col = 0
             for orb in orbs:
+                if orb == title:
+                    continue
                 chk = QCheckBox(format_orbital_display(orb))
                 self._orbital_checks[orb] = chk
                 checks.append(chk)
@@ -144,6 +152,49 @@ class FragmentPanel(QFrame):
         idx = self.combo_file.findText(current)
         if idx >= 0:
             self.combo_file.setCurrentIndex(idx)
+        self._apply_source_capabilities()
+
+    def _on_source_changed(self, _index):
+        self._apply_source_capabilities()
+        self.input_changed.emit()
+
+    def _apply_source_capabilities(self):
+        idx = self.combo_file.currentIndex()
+        if idx < 0 or idx >= len(self.state.file_entries):
+            return
+        entry = self.state.file_entries[idx]
+        capabilities = entry.get("capabilities") or {}
+        available = set(capabilities.get("available_orbitals", ()))
+        if not available:
+            for check in self._orbital_checks.values():
+                check.setEnabled(True)
+                check.setToolTip("")
+            return
+        groups = {
+            "s": tuple(s_orb_names), "p": tuple(p_orb_names),
+            "d": tuple(d_orb_names), "f": tuple(f_orb_names),
+        }
+        for total, components in groups.items():
+            total_check = self._orbital_checks[total]
+            total_available = total in available or set(components) <= available
+            total_check.setEnabled(total_available)
+            if not total_available:
+                total_check.setChecked(False)
+                total_check.setToolTip(
+                    f"{total}-total is unavailable in this source's projected-DOS layout.")
+            for component in components:
+                if component == total or component not in self._orbital_checks:
+                    continue
+                check = self._orbital_checks[component]
+                enabled = component in available
+                check.setEnabled(enabled)
+                if not enabled:
+                    check.setChecked(False)
+                    check.setToolTip(
+                        f"{component} is unavailable at "
+                        f"{capabilities.get('orbital_resolution', 'unknown')} resolution.")
+                else:
+                    check.setToolTip("")
 
     def get_selected_source(self):
         idx = self.combo_file.currentIndex()
@@ -151,6 +202,17 @@ class FragmentPanel(QFrame):
             return None, None
         entry = self.state.file_entries[idx]
         return entry['label'], entry['path']
+
+    def get_input_context(self):
+        idx = self.combo_file.currentIndex()
+        if idx < 0 or idx >= len(self.state.file_entries):
+            return None
+        entry = self.state.file_entries[idx]
+        capabilities = entry.get("capabilities") or {}
+        source_format = capabilities.get("source_format")
+        if not source_format:
+            source_format = DataLoader.detect(entry["path"])
+        return input_context_from_entry(entry, source_format)
 
     def get_atoms_text(self):
         return self.entry_atoms.text()
@@ -532,7 +594,8 @@ class HybridizationWindow(QMainWindow):
         orbitals = frag_panel.get_selected_orbitals()
         spin = self._get_spin_mode()
         alias = frag_panel.get_fragment_name()
-        return (label, fp, atoms, orbitals, spin, alias)
+        context = frag_panel.get_input_context() if fp else None
+        return (label, fp, atoms, orbitals, spin, alias, context)
 
     def _generate_plot(self):
         """Start async parsing in background thread."""
@@ -543,8 +606,8 @@ class HybridizationWindow(QMainWindow):
         p2 = self._collect_fragment_params(self.frag2)
 
         # Validate basic inputs before starting thread
-        label1, fp1, atoms1, orbs1, _, alias1 = p1
-        label2, fp2, atoms2, orbs2, _, alias2 = p2
+        label1, fp1, atoms1, orbs1, _, alias1, _ = p1
+        label2, fp2, atoms2, orbs2, _, alias2, _ = p2
         if not fp1 or not fp2:
             QMessageBox.warning(self, "Invalid Input", "Please select a data source file for both fragments.")
             return

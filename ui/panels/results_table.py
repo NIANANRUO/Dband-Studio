@@ -259,6 +259,14 @@ class ResultsTableWidget(QWidget):
             for ci, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 item.setTextAlignment(Qt.AlignCenter)
+                if ci == 0:
+                    version = rd.vasp_version or "not reported"
+                    item.setToolTip(
+                        f"Source: {rd.source_format}\nVASP: {version}\n"
+                        f"Spin: {rd.spin_mode}\nProjection: {rd.orbital_resolution}\n"
+                        f"Fields: {rd.field_source}\nIntegration: {rd.integration_method}\n"
+                        f"Structure: {rd.structure_source}\nMetadata: {rd.metadata_source}\n"
+                        f"SAXIS: {rd.saxis_source}")
                 
                 # Striping and grouping logic
                 is_odd = (row % 2 == 1)

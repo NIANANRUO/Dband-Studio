@@ -18,8 +18,21 @@ materials-science researchers who need fast, reproducible PDOS analysis.
 - **Orbital hybridization**: two-fragment overlap analysis with bond-length statistics
 - **Nature-style plots**: matplotlib-based, exportable to PNG/PDF/SVG
 - **Plugin system**: drop custom parsers into `plugins/` for automatic registration
+- **Import preflight**: reports source format, spin mode, orbital resolution,
+  available orbitals, and actionable diagnostics before calculation
+- **Honest orbital semantics**: VASP `d` projections are never presented as
+  independently selectable `3d`, `4d`, or `5d` shells
+- **Explicit file authorization**: neighboring structure and metadata files
+  are never discovered or read unless the user selects them
 
 ## Quick Start
+
+Standard VASP `vasprun.xml` and `DOSCAR` projected DOS contain angular
+momentum projections, not independent principal-quantum-number channels.
+DBand Studio therefore does not fabricate separate `3d`, `4d`, or `5d` data.
+
+Selecting one file authorizes only that file. Use **Aux Files** to explicitly
+select a structure, calculation metadata, or VASPKIT spin partner when needed.
 
 ```bash
 pip install -e .
@@ -78,7 +91,7 @@ tests/               Unit tests + end-to-end verification
 ## Testing
 
 ```bash
-pytest tests/ -q                          # 41 unit tests
+pytest tests/ -q                          # unit and UI regression tests
 set DBAND_REAL_DOSCAR=D:\\path\\to\\DOSCAR
 python tests/verify_e2e_correctness.py    # optional end-to-end on real VASP data
 ```

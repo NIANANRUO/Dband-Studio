@@ -6,7 +6,7 @@ import numpy as np
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QProgressDialog,
     QPushButton, QSplitter, QMessageBox, QFileDialog, QGroupBox, QTabWidget,
-    QMenuBar, QMenu, QFrame, QLabel, QStackedWidget
+    QMenuBar, QMenu, QFrame, QLabel, QStackedWidget, QScrollArea
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QAction
@@ -19,6 +19,8 @@ from core.services.exporter import DataExporter
 from core.exceptions import (
     DbandError, MissingProjectedDOSError, AtomNotFoundError,
     FileTypeError, OrbitalMissingError, VASPKitAtomError,
+    AmbiguousLayoutError, FileIntegrityError, OrbitalUnavailableError,
+    AtomSelectionError, StructureMismatchError, UnsupportedLayoutError,
 )
 from ui.panels.file_manager import FileManagerPanel
 from ui.panels.param_manager import ParamManagerPanel
@@ -27,12 +29,14 @@ from ui.charts.bar_chart import BarChartWidget
 from ui.charts.pdos_chart import PDOSChartWidget
 from ui.charts.multi_pdos_chart import MultiPDOSChartWidget
 from utils.styling import BTN_RUN_COLOR, BTN_HYB_COLOR
+from utils.helpers import get_app_version
+from ui.control_sizing import ensure_compact_controls_fit_text
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("DBand Studio")
+        self.setWindowTitle(f"DBand Studio v{get_app_version()}")
         self.resize(1300, 850)
         self.setAcceptDrops(True)
         
@@ -44,6 +48,12 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._connect_signals()
         self.statusBar().showMessage("Ready \u2014 drag files here or click Add Files.")
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Font metrics can change when the window enters a high-DPI screen.
+        ensure_compact_controls_fit_text(self.left_panel)
+        self.left_panel.layout().activate()
 
     # ---------- drag & drop ----------
     def dragEnterEvent(self, event: QDragEnterEvent):
@@ -63,15 +73,23 @@ class MainWindow(QMainWindow):
 
         # ---- LEFT PANEL ----
         self.left_panel = QWidget()
-        self.left_panel.setFixedWidth(360)
+        self.left_panel.setMinimumWidth(380)
         ll = QVBoxLayout(self.left_panel)
-        ll.addStretch()
+        ll.setContentsMargins(4, 4, 4, 4)
 
         self.file_panel = FileManagerPanel(self.state)
         ll.addWidget(self.file_panel)
 
         self.param_panel = ParamManagerPanel(self.state)
         ll.addWidget(self.param_panel)
+
+        projection_note = QLabel(
+            "d-band metrics use the VASP d projection. Standard vasprun.xml "
+            "and DOSCAR data cannot independently select 3d, 4d, or 5d.")
+        projection_note.setObjectName("ProjectionSemanticsNote")
+        projection_note.setWordWrap(True)
+        projection_note.setStyleSheet("font-size: 10px; color: #666666; padding: 2px 8px;")
+        ll.addWidget(projection_note)
 
         # Actions
         g3 = QFrame()
@@ -107,6 +125,17 @@ class MainWindow(QMainWindow):
 
         ll.addWidget(g3)
         ll.addStretch()
+
+        self.left_scroll = QScrollArea()
+        self.left_scroll.setObjectName("LeftControlScroll")
+        self.left_scroll.setWidgetResizable(True)
+        self.left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.left_scroll.setFrameShape(QFrame.NoFrame)
+        self.left_scroll.setFixedWidth(410)
+        self.left_scroll.setWidget(self.left_panel)
+        self.left_panel.ensurePolished()
+        ensure_compact_controls_fit_text(self.left_panel)
 
         # ---- RIGHT PANEL ----
         right = QSplitter(Qt.Vertical)
@@ -145,7 +174,7 @@ class MainWindow(QMainWindow):
         right.addWidget(chart_panel)
         right.setSizes([320, 420])
 
-        root.addWidget(self.left_panel)
+        root.addWidget(self.left_scroll)
         root.addWidget(right)
 
     # ---------- menu bar ----------
@@ -579,7 +608,9 @@ class MainWindow(QMainWindow):
     # Exception class name → display severity mapping
     _WARN_EXCEPTIONS = (
         MissingProjectedDOSError, AtomNotFoundError, FileTypeError,
-        OrbitalMissingError, VASPKitAtomError,
+        OrbitalMissingError, VASPKitAtomError, AmbiguousLayoutError,
+        FileIntegrityError, OrbitalUnavailableError, StructureMismatchError,
+        AtomSelectionError, UnsupportedLayoutError,
     )
 
     def _on_worker_file_error(self, label, err_type, message):

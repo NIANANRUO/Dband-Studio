@@ -12,6 +12,47 @@ class DbandError(Exception):
     """Base exception for all d-band analyzer errors."""
 
 
+class FileIntegrityError(DbandError):
+    """The source is truncated, malformed, or internally inconsistent."""
+
+
+class UnsupportedLayoutError(DbandError):
+    """The projected-DOS column layout is not a supported VASP 5/6 layout."""
+
+    def __init__(self, source: str, columns: int, detail: str = ""):
+        message = f"{source}: unsupported projected DOS layout ({columns} data columns)."
+        if detail:
+            message += f" {detail}"
+        super().__init__(message)
+
+
+class AmbiguousLayoutError(DbandError):
+    """The available metadata cannot uniquely determine a physical layout."""
+
+    def __init__(self, source: str, columns: int, action: str):
+        super().__init__(
+            f"{source}: ambiguous projected DOS layout; {columns} columns have more than one valid "
+            f"physical interpretation. {action}")
+
+
+class StructureMismatchError(DbandError):
+    """Structure and projected-DOS site counts cannot be aligned."""
+
+
+class OrbitalUnavailableError(DbandError):
+    """A requested orbital is not physically present in the source."""
+
+    def __init__(self, orbital: str, available: tuple[str, ...]):
+        choices = ", ".join(available) if available else "none"
+        super().__init__(
+            f"Requested orbital '{orbital}' is unavailable. Available VASP "
+            f"projected orbitals: {choices}.")
+
+
+class AtomSelectionError(DbandError):
+    """An atom selection cannot be resolved for the available structure data."""
+
+
 class AtomNotFoundError(DbandError):
     """No matching atoms found in the structure for the given selection."""
 
@@ -61,7 +102,7 @@ class FileTypeError(DbandError):
         self.filepath = filepath
         super().__init__(
             f"Cannot detect file type for '{filepath}'. "
-            "Supported formats: vasprun.xml, DOSCAR (with POSCAR/CONTCAR), VASPKIT PDOS."
+            "Supported formats: vasprun.xml, DOSCAR, and VASPKIT PDOS."
         )
 
 
@@ -72,7 +113,7 @@ class VASPKitAtomError(DbandError):
         self.atoms_str = atoms_str
         self.n_blocks = n_blocks
         super().__init__(
-            f"Atom selection '{atoms_str}' uses element names, but no POSCAR/CONTCAR found "
-            f"alongside the VASPKIT PDOS file. Use numeric indices (1–{n_blocks}) instead, "
-            f"or place POSCAR in the same directory."
+            f"Atom selection '{atoms_str}' uses element names, but no structure "
+            f"file was authorized. Use numeric indices (1–{n_blocks}) or "
+            f"explicitly select a matching POSCAR/CONTCAR."
         )

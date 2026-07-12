@@ -124,7 +124,7 @@ class AppState:
     # NOTE: This is the *workspace file format* version, semantically
     # distinct from the application release version (see utils.helpers.get_app_version).
     # Bump this only when the JSON schema of save_workspace changes.
-    _WORKSPACE_VERSION = "1.0"
+    _WORKSPACE_VERSION = "1.1"
 
     def save_workspace(self, path: str) -> None:
         """Save workspace state to a JSON file.
@@ -160,6 +160,14 @@ class AppState:
                 f"expected={self._WORKSPACE_VERSION}. Attempting to load anyway.")
 
         self.file_entries = data.get("file_entries", [])
+        for entry in self.file_entries:
+            entry.setdefault("auxiliary_files", {
+                "structure": None,
+                "metadata": None,
+                "spin_partner": None,
+            })
+            entry.setdefault("inspection_status", "not_checked")
+            entry.setdefault("inspection_error", "")
         # Reconstruct DbandResult with forward-compatibility: ignore unknown
         # keys in old workspace files and supply defaults for missing fields,
         # so adding a new field to DbandResult won't break loading old saves.

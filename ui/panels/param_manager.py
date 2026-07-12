@@ -31,7 +31,6 @@ class ParamManagerPanel(QFrame):
         lbl_layout.addWidget(QLabel("Target Atoms (e.g. 1,2,5-8 or Fe):"))
         lbl_layout.addStretch()
         btn_config = QPushButton("⚙️ Configure")
-        btn_config.setFixedHeight(26)
         btn_config.setToolTip("Configure Target Atoms for each system independently")
         btn_config.clicked.connect(self._open_atoms_config)
         lbl_layout.addWidget(btn_config)

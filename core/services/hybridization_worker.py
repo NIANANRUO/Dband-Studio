@@ -16,7 +16,13 @@ from PySide6.QtCore import QThread, Signal
 from core.loader import DataLoader
 from core.exceptions import DbandError, FileTypeError
 from core.parsers.common import _detect_has_spin
-from core.services.file_identity import file_fingerprint
+from core.orbital_selection import (
+    ResolvedOrbitalRequest, materialize_orbital_outputs,
+    resolve_orbital_request,
+)
+from core.pdos_metadata import PDOSCapabilities
+from core.services.file_identity import context_fingerprint, file_fingerprint
+from core.pdos_metadata import PDOSInputContext
 
 
 @dataclass(frozen=True)
@@ -96,8 +102,8 @@ class HybridizationWorker(QThread):
             
             geometry_result = GeometryAnalysisResult(None)
             if self.geom_params is not None:
-                _, fp1, atoms1, _, _, _ = self.p1
-                _, fp2, atoms2, _, _, _ = self.p2
+                _, fp1, atoms1, _, _, _ = self.p1[:6]
+                _, fp2, atoms2, _, _, _ = self.p2[:6]
                 
                 if len(self.geom_params) == 4:
                     cutoff, mode, b_atoms1, b_atoms2 = self.geom_params
@@ -133,25 +139,38 @@ class HybridizationWorker(QThread):
         vasprun.xml) invalidates the stale entry instead of returning the
         previous parse's DOS arrays.
         """
-        label, fp, atoms, orbitals, spin, alias = params
+        label, fp, atoms, orbitals, spin, alias = params[:6]
+        explicit_context = params[6] if len(params) > 6 else None
         if not fp:
             raise ValueError("Please select a data source file.")
         if not orbitals:
             raise ValueError("Please select at least one orbital.")
 
+        source = explicit_context or fp
+        capabilities = DataLoader.inspect(source)
+        if isinstance(capabilities, PDOSCapabilities):
+            resolved = resolve_orbital_request(orbitals, capabilities)
+            capability_key = (
+                capabilities.spin_mode, capabilities.orbital_resolution,
+                capabilities.available_orbitals)
+        else:
+            # Compatibility for third-party loaders that do not yet expose an
+            # inspector. Missing channels are still rejected below.
+            resolved = ResolvedOrbitalRequest(
+                tuple(orbitals), {orbital: (orbital,) for orbital in orbitals})
+            capability_key = ("unknown", "unknown", ())
+
         fingerprint = file_fingerprint(fp)
-        cache_key = (fp, fingerprint, atoms, spin, tuple(sorted(orbitals)))
+        authorized_fingerprint = (
+            context_fingerprint(explicit_context)
+            if isinstance(explicit_context, PDOSInputContext) else None)
+        cache_key = (
+            fp, fingerprint, authorized_fingerprint, atoms, spin,
+            tuple(sorted(orbitals)), capability_key)
 
         # Check local cache first
         if cache_key in self._local_cache:
-            e_aligned, r_up, r_dn, _old_orbs, _alias = self._local_cache[cache_key]
-            # Use .get(o, zeros) fallback for consistency with the full-parse path;
-            # silently skipping missing orbitals would diverge from the contract.
-            r_up_new = ({o: r_up.get(o, np.zeros_like(e_aligned)) for o in orbitals}
-                        if r_up else None)
-            r_dn_new = ({o: r_dn.get(o, np.zeros_like(e_aligned)) for o in orbitals}
-                        if r_dn else None)
-            return (e_aligned, r_up_new, r_dn_new, orbitals, alias)
+            return self._local_cache[cache_key]
 
         # Check shared cache (AppState.parsed_cache) by label.
         # CRITICAL: the shared cache is keyed by *label*, which the user can
@@ -164,36 +183,43 @@ class HybridizationWorker(QThread):
             entry = self._shared_cache[label]
             if (entry.get("atoms") == atoms
                     and entry.get("filepath") == fp
-                    and entry.get("file_fingerprint") == fingerprint):
+                    and entry.get("file_fingerprint") == fingerprint
+                    and (authorized_fingerprint is None or
+                         entry.get("context_fingerprint") == authorized_fingerprint)):
                 energy = entry["energy"]
                 ef = entry["ef"]
                 rho_up_full = entry["up"]
                 rho_dn_full = entry["down"]
                 has_spin = entry["has_spin"]
-    
-                e_aligned = energy - ef
-                def filter_orbs(r):
-                    return {o: r.get(o, np.zeros_like(e_aligned)) for o in orbitals}
-    
-                if spin == "up":
-                    result = (e_aligned, filter_orbs(rho_up_full), None, orbitals, alias)
-                elif spin == "down":
-                    result = (e_aligned, None, filter_orbs(rho_dn_full), orbitals, alias)
+                required = set(resolved.parser_orbitals)
+                cache_has_required = required <= set(rho_up_full)
+                if not cache_has_required:
+                    entry = None
                 else:
-                    if not has_spin:
+                    e_aligned = energy - ef
+                    def filter_orbs(r):
+                        return materialize_orbital_outputs(r, resolved)
+
+                    if spin == "up":
                         result = (e_aligned, filter_orbs(rho_up_full), None, orbitals, alias)
+                    elif spin == "down":
+                        result = (e_aligned, None, filter_orbs(rho_dn_full), orbitals, alias)
                     else:
-                        result = (e_aligned, filter_orbs(rho_up_full), filter_orbs(rho_dn_full), orbitals, alias)
-    
-                self._local_cache[cache_key] = result
-                return result
+                        if not has_spin:
+                            result = (e_aligned, filter_orbs(rho_up_full), None, orbitals, alias)
+                        else:
+                            result = (e_aligned, filter_orbs(rho_up_full), filter_orbs(rho_dn_full), orbitals, alias)
+
+                    self._local_cache[cache_key] = result
+                    return result
 
         # Cache miss — full parse
-        energy, rho_up, rho_dn, rho_total, ef = DataLoader.load_spin_all(fp, atoms, orbitals=orbitals)
+        energy, rho_up, rho_dn, rho_total, ef = DataLoader.load_spin_all(
+            source, atoms, orbitals=list(resolved.parser_orbitals))
 
         e_aligned = energy - ef
         def filter_orbs(r):
-            return {o: r.get(o, np.zeros_like(e_aligned)) for o in orbitals}
+            return materialize_orbital_outputs(r, resolved)
 
         if spin == "up":
             result = (e_aligned, filter_orbs(rho_up), None, orbitals, alias)

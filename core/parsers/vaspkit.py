@@ -10,7 +10,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from core.exceptions import AtomNotFoundError, DbandError, VASPKitAtomError
-from core.parsers.common import _detect_has_spin, _load_structure_near, _site_symbol
+from core.pdos_metadata import PDOSInputContext
+from core.parsers.common import _detect_has_spin, _load_structure_file, _site_symbol
 from core.parsers.constants import all_orb_names
 
 _logger = logging.getLogger("dband.parsers")
@@ -130,7 +131,8 @@ def _read_vaspkit_blocks(filepath: str):
 
 
 def _resolve_atom_indices_vaspkit(
-    filepath: str, atoms_str: str, n_blocks: int
+    filepath: str, atoms_str: str, n_blocks: int,
+    *, structure_path: Optional[str] = None,
 ) -> list:
     """Resolve atom selection for VASPKIT multi-atom PDOS."""
     if not atoms_str.strip():
@@ -150,7 +152,9 @@ def _resolve_atom_indices_vaspkit(
             target.extend(range(start - 1, min(end, n_blocks)))
         else:
             if struct is None:
-                struct = _load_structure_near(filepath)
+                if not structure_path:
+                    raise VASPKitAtomError(atoms_str, n_blocks)
+                struct = _load_structure_file(structure_path)
             if struct is None:
                 raise VASPKitAtomError(atoms_str, n_blocks)
             for i, site in enumerate(struct):
@@ -180,50 +184,6 @@ def _detect_spin_channel(filepath: str) -> str:
     return "unknown"
 
 
-def _find_spin_partner(filepath: str) -> Optional[str]:
-    """Find the spin-partner file via regex substitution.
-
-    Supports common naming conventions: ``_u/_d``, ``_up/_dw``,
-    ``_alpha/_beta``, ``_1/_2``, case-insensitive.  More extensible
-    than the previous hardcoded 12-pair lookup.
-    """
-    bn = os.path.basename(filepath)
-    d = os.path.dirname(filepath)
-
-    # Split extension so suffix matching targets the stem only.
-    stem, dot, ext = bn.rpartition(".")
-    if not dot:  # no extension
-        stem, ext = bn, ""
-
-    # Ordered (up_pattern, down_replacement) and the reverse.  Match the
-    # longest suffix first so ``_up`` does not shadow ``_u``.
-    transforms = [
-        ("_up", "_dw"), ("_UP", "_DW"),
-        ("_up", "_dn"), ("_UP", "_DN"),
-        ("_up", "_down"), ("_UP", "_DOWN"),
-        ("_u", "_d"),   ("_U", "_D"),
-        ("_alpha", "_beta"), ("_ALPHA", "_BETA"),
-        ("_1", "_2"),   ("_spinup", "_spindn"),
-        ("_SPINUP", "_SPINDN"),
-        # Reverse direction (file is down, look for up)
-        ("_dw", "_up"), ("_DW", "_UP"),
-        ("_dn", "_up"), ("_DN", "_UP"),
-        ("_down", "_up"), ("_DOWN", "_UP"),
-        ("_d", "_u"),   ("_D", "_U"),
-        ("_beta", "_alpha"), ("_BETA", "_ALPHA"),
-        ("_2", "_1"),   ("_spindn", "_spinup"),
-        ("_SPINDN", "_SPINUP"),
-    ]
-    for src, dst in transforms:
-        if stem.endswith(src):
-            new_stem = stem[:-len(src)] + dst
-            new_bn = new_stem + (("." + ext) if ext else "")
-            p = os.path.join(d, new_bn)
-            if os.path.exists(p):
-                return p
-    return None
-
-
 def _assert_same_energy_axis(
     ref: np.ndarray,
     other: np.ndarray,
@@ -243,10 +203,12 @@ def parse_vaspkit(
     spin_mode: str,
     atoms_str: str = "",
     orbitals: Optional[List[str]] = None,
+    *,
+    input_context: Optional[PDOSInputContext] = None,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], float]:
     """Parse VASPKIT PDOS file -> (energy, rho_dict, ef)."""
     energy, rho_up, rho_dn, _rho_total, ef = parse_vaspkit_spin_all(
-        filepath, atoms_str, orbitals=orbitals)
+        filepath, atoms_str, orbitals=orbitals, input_context=input_context)
     if spin_mode == "up":
         return energy, rho_up, ef
     elif spin_mode == "down":
@@ -263,6 +225,8 @@ def parse_vaspkit_spin_all(
     filepath: str,
     atoms_str: str = "",
     orbitals: Optional[List[str]] = None,
+    *,
+    input_context: Optional[PDOSInputContext] = None,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], float]:
     """Parse VASPKIT PDOS -> (energy, rho_up, rho_dn, rho_total, ef) in one pass.
 
@@ -277,6 +241,7 @@ def parse_vaspkit_spin_all(
     (VASPKIT PDOS files never embed the Fermi level).
     """
     ef = 0.0
+    context = input_context or PDOSInputContext(filepath, "VASPKIT PDOS")
     target_orbs = list(orbitals) if orbitals else list(all_orb_names)
     ch = _detect_spin_channel(filepath)
 
@@ -291,7 +256,9 @@ def parse_vaspkit_spin_all(
                     "%s: atom selection ignored — single-block (system total) PDOS", fp)
             selected = [0]
         else:
-            selected = _resolve_atom_indices_vaspkit(fp, atoms_str, len(blocks))
+            selected = _resolve_atom_indices_vaspkit(
+                fp, atoms_str, len(blocks),
+                structure_path=context.structure_path)
         rho: Dict[str, np.ndarray] = {o: np.zeros_like(energy) for o in target_orbs}
         for idx in selected:
             if idx >= len(blocks):
@@ -317,7 +284,7 @@ def parse_vaspkit_spin_all(
         return energy, rho_up, rho_dn, rho_total, ef
 
     # Spin-polarised: locate the partner channel.
-    partner = _find_spin_partner(filepath)
+    partner = context.spin_partner_path
     if partner is None:
         _logger.warning(
             "%s: spin channel '%s' has no partner file; treating as non-spin.",

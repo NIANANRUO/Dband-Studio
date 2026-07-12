@@ -28,6 +28,11 @@ class DataExporter:
                 header.append(f"{o} Wt%")
             for o in d_orb_names:
                 header.append(f"{o} Center(eV)")
+            header.extend([
+                "Structure Source", "Metadata Source", "SAXIS Source",
+                "Source Format", "VASP Version", "Spin Mode",
+                "Orbital Resolution", "Field Source", "Integration Method",
+            ])
             w.writerow(header)
             for rd in results_data:
                 row = [
@@ -48,6 +53,12 @@ class DataExporter:
                     for o in d_orb_names:
                         c = rd.orb_centers.get(o, float('nan'))
                         row.append(f"{c:.4f}" if np.isfinite(c) else "NaN")
+                row.extend([
+                    rd.structure_source, rd.metadata_source, rd.saxis_source,
+                    rd.source_format, rd.vasp_version, rd.spin_mode,
+                    rd.orbital_resolution, rd.field_source,
+                    rd.integration_method,
+                ])
                 w.writerow(row)
 
     @staticmethod

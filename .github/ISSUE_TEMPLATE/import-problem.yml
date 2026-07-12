@@ -1,0 +1,31 @@
+name: VASP import problem
+description: Report a vasprun.xml, DOSCAR, or VASPKIT PDOS compatibility issue
+title: "[Import] "
+labels: ["import", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: Use **Copy Details** in DBand Studio and remove confidential paths before posting.
+  - type: textarea
+    id: diagnosis
+    attributes:
+      label: Import diagnosis
+      description: Paste the copied import details and full error message.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: DBand Studio, VASP, and Python versions
+    validations:
+      required: true
+  - type: textarea
+    id: flags
+    attributes:
+      label: Relevant VASP flags
+      description: Include LORBIT, ISPIN, LSORBIT, LNONCOLLINEAR, and SAXIS.
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Reproducer
+      description: Link or attach the smallest redistributable sample if permitted.

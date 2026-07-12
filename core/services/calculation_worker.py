@@ -6,6 +6,7 @@ Uses QThread to avoid blocking the main thread during file parsing.
 """
 from __future__ import annotations
 
+import os
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
@@ -16,7 +17,8 @@ from core.exceptions import (
 from core.parsers import d_orb_names
 from core.parsers.common import _detect_has_spin
 from core.calculator import calc_metrics
-from core.services.file_identity import file_fingerprint
+from core.services.file_identity import context_fingerprint, file_fingerprint
+from core.pdos_metadata import input_context_from_entry
 from models.results import DbandResult
 
 
@@ -79,16 +81,19 @@ class CalculationWorker(QThread):
             current_atoms = file_atoms if file_atoms else self.atoms
             
             try:
+                if entry.get("inspection_error"):
+                    raise DbandError(entry["inspection_error"])
                 ftype = self.chosen_type
                 if ftype == "Auto Detect":
                     ftype = DataLoader.detect(fp)
+                input_context = input_context_from_entry(entry, ftype)
 
                 # Only d-orbitals are needed for d-band metrics; requesting
                 # just them avoids parsing/allocating 11 unused s/p/f arrays
                 # (3× memory saving on large systems).
                 requested_orbitals = [*d_orb_names, "d"]
                 energy, rho_up, rho_dn, rho_total, ef, metadata = DataLoader.load_spin_all_with_metadata(
-                    fp, current_atoms, orbitals=requested_orbitals)
+                    input_context, current_atoms, orbitals=requested_orbitals)
                 # VASPKIT PDOS files never embed the Fermi level (ef forced to 0).
                 # Warn once per file so users know the energy axis is NOT aligned.
                 if ftype == "VASPKIT PDOS":
@@ -119,6 +124,7 @@ class CalculationWorker(QThread):
                     "atoms": current_atoms,
                     "filepath": fp,
                     "file_fingerprint": file_fingerprint(fp),
+                    "context_fingerprint": context_fingerprint(input_context),
                     "energy": energy,
                     "ef": ef,
                     "up": rho_up,
@@ -127,6 +133,7 @@ class CalculationWorker(QThread):
                     "orbital_resolution": orbital_resolution,
                     "d_orbitals": metric_orbitals,
                     "metadata": metadata,
+                    "input_context": input_context,
                 }
 
                 ranges = []
@@ -154,6 +161,33 @@ class CalculationWorker(QThread):
                         orb_weights={o: om[o]["weight"] * 100 for o in metric_orbitals},
                         orb_centers={o: om[o]["center"] for o in metric_orbitals},
                         orbital_resolution=orbital_resolution,
+                        source_format=metadata.source_format,
+                        vasp_version=(
+                            metadata.capabilities.vasp_version
+                            if metadata.capabilities and metadata.capabilities.vasp_version
+                            else ""),
+                        spin_mode=metadata.mode,
+                        field_source=(
+                            metadata.capabilities.field_source
+                            if metadata.capabilities else "unknown"),
+                        integration_method=self.integration_method,
+                        structure_source=(
+                            os.path.basename(input_context.structure_path)
+                            if input_context.structure_path else
+                            ("embedded vasprun.xml" if ftype == "vasprun.xml"
+                             else "numeric indices")),
+                        metadata_source=(
+                            os.path.basename(input_context.metadata_path)
+                            if input_context.metadata_path else
+                            ("embedded vasprun.xml" if ftype == "vasprun.xml"
+                             else "none")),
+                        saxis_source=(
+                            (os.path.basename(input_context.metadata_path)
+                             if input_context.metadata_path else
+                             ("embedded vasprun.xml" if ftype == "vasprun.xml"
+                              else "VASP default (0,0,1)"))
+                            if metadata.mode == "noncollinear"
+                            else "not applicable"),
                     )
                     results_data.append(rd)
 

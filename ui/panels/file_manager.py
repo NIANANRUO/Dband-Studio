@@ -3,14 +3,20 @@ File management panel: file type selection, add/remove/rename/clear, file list t
 """
 import os
 import glob
+from dataclasses import asdict
 
 from PySide6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QTableWidget, QTableWidgetItem,
-    QFileDialog, QMessageBox, QInputDialog, QHeaderView, QAbstractItemView,
+    QApplication, QFileDialog, QMessageBox, QInputDialog, QHeaderView,
+    QAbstractItemView, QMenu,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
+
+from core.exceptions import AmbiguousLayoutError, DbandError
+from core.loader import DataLoader
+from core.pdos_metadata import input_context_from_entry
 
 
 class FileManagerPanel(QFrame):
@@ -42,7 +48,6 @@ class FileManagerPanel(QFrame):
         row_type.addWidget(QLabel("Type:"))
         self.combo_type = QComboBox()
         self.combo_type.addItems(["Auto Detect", "vasprun.xml", "DOSCAR", "VASPKIT PDOS"])
-        self.combo_type.setFixedHeight(24)
         row_type.addWidget(self.combo_type, 1)
         layout.addLayout(row_type)
 
@@ -51,45 +56,65 @@ class FileManagerPanel(QFrame):
         grid.setSpacing(4)
 
         btn_add = QPushButton("\U0001f4c2 Add Files")
-        btn_add.setFixedHeight(26)
         btn_add.clicked.connect(self.add_files)
         grid.addWidget(btn_add, 0, 0)
 
         btn_folder = QPushButton("\U0001f4c1 Add Folder")
-        btn_folder.setFixedHeight(26)
         btn_folder.clicked.connect(self.add_folder)
         grid.addWidget(btn_folder, 0, 1)
 
         btn_rm = QPushButton("Remove")
-        btn_rm.setFixedHeight(26)
         btn_rm.clicked.connect(self.remove_selected)
         grid.addWidget(btn_rm, 1, 0)
 
         btn_rn = QPushButton("Rename")
-        btn_rn.setFixedHeight(26)
         btn_rn.clicked.connect(self.rename_file)
         grid.addWidget(btn_rn, 1, 1)
 
         btn_cl = QPushButton("Clear All")
-        btn_cl.setFixedHeight(26)
         btn_cl.clicked.connect(self.clear_files)
         grid.addWidget(btn_cl, 2, 0, 1, 2)
+
+        self.btn_copy = QPushButton("Copy Details")
+        self.btn_copy.setToolTip("Copy the selected file's import diagnosis for issue reports")
+        self.btn_copy.clicked.connect(self.copy_selected_details)
+        grid.addWidget(self.btn_copy, 3, 0)
+
+        btn_aux = QPushButton("Aux Files")
+        btn_aux.setToolTip("Select auxiliary files that DBand Studio is authorized to read")
+        aux_menu = QMenu(btn_aux)
+        aux_menu.addAction("Select Structure...", lambda: self.choose_auxiliary_file("structure"))
+        aux_menu.addAction("Select Metadata...", lambda: self.choose_auxiliary_file("metadata"))
+        aux_menu.addAction("Select Spin Partner...", lambda: self.choose_auxiliary_file("spin_partner"))
+        aux_menu.addSeparator()
+        aux_menu.addAction("Remove Auxiliary Files", self.clear_auxiliary_files)
+        btn_aux.setMenu(aux_menu)
+        grid.addWidget(btn_aux, 3, 1)
 
         layout.addLayout(grid)
 
         # File list table
-        self.list_files = QTableWidget(0, 2)
-        self.list_files.setHorizontalHeaderLabels(["#", "System Label"])
+        self.list_files = QTableWidget(0, 3)
+        self.list_files.setHorizontalHeaderLabels(["#", "System Label", "Data"])
         self.list_files.horizontalHeader().setToolTip("Double-click the System Label to rename it")
         self.list_files.verticalHeader().setVisible(False)
         self.list_files.setShowGrid(False)
         self._apply_list_stylesheet()
         self.list_files.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.list_files.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.list_files.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.list_files.setFixedHeight(140)
         self.list_files.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.list_files.itemChanged.connect(self._on_label_edited)
+        self.list_files.itemSelectionChanged.connect(self._update_selected_diagnostic)
         layout.addWidget(self.list_files)
+
+        self.lbl_diagnostic = QLabel("No file selected.")
+        self.lbl_diagnostic.setWordWrap(True)
+        self.lbl_diagnostic.setMinimumHeight(34)
+        self.lbl_diagnostic.setStyleSheet(
+            "font-size: 10px; color: #555555; padding: 2px 4px;")
+        layout.addWidget(self.lbl_diagnostic)
 
     def get_file_type(self):
         return self.combo_type.currentText()
@@ -127,9 +152,21 @@ class FileManagerPanel(QFrame):
                 while label in existing_labels:
                     label = f"{orig} ({c})"
                     c += 1
-            self.state.file_entries.append({"path": f, "label": label, "atoms": ""})
+            entry = {
+                "path": f, "label": label, "atoms": "",
+                "capabilities": None, "inspection_error": "",
+                "inspection_status": "not_checked",
+                "auxiliary_files": {
+                    "structure": None, "metadata": None, "spin_partner": None,
+                },
+            }
+            self._inspect_entry(entry)
+            self.state.file_entries.append(entry)
             existing_labels.add(label)
         self._refresh_file_list()
+        if self.state.file_entries:
+            self.lbl_diagnostic.setText(
+                self._diagnostic_text(self.state.file_entries[-1]))
         self.files_changed.emit()
 
     def _refresh_file_list(self):
@@ -144,6 +181,36 @@ class FileManagerPanel(QFrame):
             lbl = QTableWidgetItem(e["label"])
             lbl.setToolTip(e["path"])
             self.list_files.setItem(i, 1, lbl)
+
+            capabilities = e.get("capabilities") or {}
+            error = e.get("inspection_error", "")
+            inspection_status = e.get("inspection_status", "not_checked")
+            if inspection_status == "needs_input":
+                status = QTableWidgetItem("Needs input")
+                status.setForeground(QColor("#B26A00"))
+                status.setToolTip(error)
+            elif error:
+                status = QTableWidgetItem("Blocked")
+                status.setForeground(QColor("#C62828"))
+                status.setToolTip(error)
+            elif capabilities:
+                resolution = capabilities.get("orbital_resolution", "unknown")
+                status = QTableWidgetItem(f"Ready · {resolution}")
+                available = ", ".join(capabilities.get("available_orbitals", ()))
+                warnings = "\n".join(capabilities.get("warnings", ()))
+                details = (
+                    f"Format: {capabilities.get('source_format', 'unknown')}\n"
+                    f"Spin: {capabilities.get('spin_mode', 'unknown')}\n"
+                    f"Orbitals: {available or 'none'}")
+                if warnings:
+                    details += f"\nWarnings:\n{warnings}"
+                status.setToolTip(details)
+                status.setForeground(QColor("#2E7D32"))
+            else:
+                status = QTableWidgetItem("Not checked")
+                status.setToolTip("This entry predates import preflight; re-add it to inspect.")
+            status.setFlags(status.flags() & ~Qt.ItemIsEditable)
+            self.list_files.setItem(i, 2, status)
         self.list_files.blockSignals(False)
 
     def _on_label_edited(self, item):
@@ -186,6 +253,136 @@ class FileManagerPanel(QFrame):
         self.state.file_entries.clear()
         self.list_files.setRowCount(0)
         self.clear_requested.emit()
+
+    def _inspect_entry(self, entry):
+        declared = self.get_file_type()
+        try:
+            if declared == "Auto Detect":
+                source_format = DataLoader.detect(entry["path"])
+            else:
+                source_format = declared
+            context = input_context_from_entry(entry, source_format)
+            capabilities = DataLoader.inspect(context)
+            entry["capabilities"] = asdict(capabilities)
+            entry["inspection_error"] = ""
+            entry["inspection_status"] = "ready"
+        except AmbiguousLayoutError as exc:
+            entry["capabilities"] = None
+            entry["inspection_error"] = str(exc)
+            entry["inspection_status"] = "needs_input"
+        except (DbandError, OSError, ValueError) as exc:
+            entry["capabilities"] = None
+            entry["inspection_error"] = str(exc)
+            entry["inspection_status"] = "blocked"
+
+    def _selected_row(self):
+        rows = self.list_files.selectionModel().selectedRows()
+        return rows[0].row() if rows else None
+
+    @staticmethod
+    def _diagnostic_text(entry):
+        status = entry.get("inspection_status", "not_checked")
+        auxiliary = entry.get("auxiliary_files") or {}
+        authorized = [
+            f"{kind}={os.path.basename(path)}"
+            for kind, path in auxiliary.items() if path]
+        suffix = f" Authorized: {', '.join(authorized)}." if authorized else ""
+        if entry.get("inspection_error"):
+            return (
+                f"{status.replace('_', ' ').title()}: "
+                f"{entry['inspection_error']}{suffix}")
+        capabilities = entry.get("capabilities") or {}
+        return (
+            f"Ready: {capabilities.get('source_format', 'unknown')}, "
+            f"{capabilities.get('spin_mode', 'unknown')} spin, "
+            f"{capabilities.get('orbital_resolution', 'unknown')} projection."
+            f"{suffix}")
+
+    def _update_selected_diagnostic(self):
+        row = self._selected_row()
+        if row is not None:
+            self.lbl_diagnostic.setText(
+                self._diagnostic_text(self.state.file_entries[row]))
+
+    def choose_auxiliary_file(self, kind):
+        row = self._selected_row()
+        if row is None:
+            QMessageBox.information(self, "Info", "Select a file row first.")
+            return
+        titles = {
+            "structure": "Select POSCAR/CONTCAR",
+            "metadata": "Select INCAR or vasprun.xml",
+            "spin_partner": "Select Spin Partner PDOS",
+        }
+        path, _ = QFileDialog.getOpenFileName(self, titles[kind], "", "All Files (*)")
+        if path:
+            self.set_auxiliary_file(row, kind, path)
+
+    def set_auxiliary_file(self, row, kind, path):
+        entry = self.state.file_entries[row]
+        auxiliary = entry.setdefault("auxiliary_files", {})
+        auxiliary[kind] = path
+        self._inspect_entry(entry)
+        self._refresh_file_list()
+        self.lbl_diagnostic.setText(self._diagnostic_text(entry))
+        self.files_changed.emit()
+
+    def clear_auxiliary_files(self):
+        row = self._selected_row()
+        if row is None:
+            QMessageBox.information(self, "Info", "Select a file row first.")
+            return
+        entry = self.state.file_entries[row]
+        entry["auxiliary_files"] = {
+            "structure": None, "metadata": None, "spin_partner": None}
+        self._inspect_entry(entry)
+        self._refresh_file_list()
+        self.lbl_diagnostic.setText(self._diagnostic_text(entry))
+        self.files_changed.emit()
+
+    def copy_selected_details(self):
+        rows = self.list_files.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "Info", "Select a file row first.")
+            return
+        entry = self.state.file_entries[rows[0].row()]
+        capabilities = entry.get("capabilities") or {}
+        lines = [f"File: {entry.get('path', '')}", f"Label: {entry.get('label', '')}"]
+        if entry.get("inspection_error"):
+            lines.append(f"Status: Blocked\nReason: {entry['inspection_error']}")
+        else:
+            lines.extend([
+                "Status: Ready",
+                f"Format: {capabilities.get('source_format', 'unknown')}",
+                f"VASP version: {capabilities.get('vasp_version') or 'not reported'}",
+                f"Spin: {capabilities.get('spin_mode', 'unknown')}",
+                f"Projection: {capabilities.get('orbital_resolution', 'unknown')}",
+                "Orbitals: " + ", ".join(capabilities.get("available_orbitals", ())),
+            ])
+            warnings = capabilities.get("warnings", ())
+            if warnings:
+                lines.append("Warnings: " + " | ".join(warnings))
+        auxiliary = entry.get("auxiliary_files") or {}
+        lines.extend([
+            f"Authorized structure: {auxiliary.get('structure') or 'none'}",
+            f"Authorized metadata: {auxiliary.get('metadata') or 'none'}",
+            f"Authorized spin partner: {auxiliary.get('spin_partner') or 'none'}",
+        ])
+        QApplication.clipboard().setText("\n".join(lines))
+        self.btn_copy.setText("Copied")
+        self.btn_copy.setStyleSheet("color: #FFFFFF; background-color: #2E7D32;")
+        self.lbl_diagnostic.setText(
+            "Copied import details to the clipboard.")
+        self.lbl_diagnostic.setStyleSheet(
+            "font-size: 10px; color: #1B5E20; padding: 2px 4px; font-weight: bold;")
+        QTimer.singleShot(2200, self._restore_copy_feedback)
+
+    def _restore_copy_feedback(self):
+        self.btn_copy.setText("Copy Details")
+        self.btn_copy.setStyleSheet("")
+        self.lbl_diagnostic.setStyleSheet(
+            "font-size: 10px; color: #555555; padding: 2px 4px;")
+        self._update_selected_diagnostic()
 
     def _restore_entries(self, entries):
         """Restore file entries from a saved workspace (used by MainWindow)."""

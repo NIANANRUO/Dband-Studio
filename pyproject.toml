@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools >= 64.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta:__legacy__"
 
 [project]
 name = "dband-studio"
-version = "1.1.5"
+version = "1.2.2"
 description = "DBand Studio — VASP DFT calculation data processing tool for d-band center analysis"
 readme = "README.md"
 license = {text = "MIT"}
@@ -42,6 +42,9 @@ dev = [
 
 [project.gui-scripts]
 d-band-center = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -25,6 +25,14 @@ class DbandResult:
     # ``lm`` exposes the five d orbitals.  ``l`` is LORBIT=10 and only has
     # a physical aggregate d channel; callers must not fabricate components.
     orbital_resolution: str = "lm"
+    source_format: str = "unknown"
+    vasp_version: str = ""
+    spin_mode: str = "unknown"
+    field_source: str = "unknown"
+    integration_method: str = "trapezoid"
+    structure_source: str = "none"
+    metadata_source: str = "none"
+    saxis_source: str = "not applicable"
 
     @property
     def is_aggregate_d(self) -> bool:

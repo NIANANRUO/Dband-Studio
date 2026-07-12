@@ -85,6 +85,62 @@ def test_calculation_worker_keeps_noncollinear_saxis_metadata_in_cache():
     assert completed[0][1]["SOC"]["metadata"] == metadata
 
 
+def test_calculation_worker_rejects_preflight_blocked_entry():
+    from core.services.calculation_worker import CalculationWorker
+
+    worker = CalculationWorker(
+        [{"path": "broken/DOSCAR", "label": "broken",
+          "inspection_error": "DOSCAR is truncated; rerun VASP."}],
+        "DOSCAR", "1", "total", True, False, False, (-10.0, 10.0))
+    errors = []
+    worker.file_error.connect(lambda label, kind, message: errors.append((label, kind, message)))
+
+    with mock.patch(
+        "core.services.calculation_worker.DataLoader.load_spin_all_with_metadata"
+    ) as load:
+        worker.run()
+
+    load.assert_not_called()
+    assert errors[0][0] == "broken"
+    assert "truncated" in errors[0][2]
+
+
+def test_calculation_worker_passes_only_explicit_auxiliary_context():
+    from core.pdos_metadata import PDOSInputContext, PDOSMetadata
+    from core.services.calculation_worker import CalculationWorker
+
+    entry = {
+        "path": "D:/calc/DOSCAR", "label": "explicit", "inspection_error": "",
+        "auxiliary_files": {
+            "structure": "D:/authorized/POSCAR",
+            "metadata": "D:/authorized/INCAR",
+            "spin_partner": None,
+        },
+    }
+    worker = CalculationWorker(
+        [entry], "DOSCAR", "1", "total",
+        True, False, False, (-10.0, 10.0))
+    energy = np.array([-1.0, 1.0])
+    rho = {"d": np.array([1.0, 1.0])}
+    captured = []
+
+    def fake_load(context, atoms, orbitals=None):
+        captured.append(context)
+        return energy, rho, {"d": np.zeros(2)}, rho, 0.0, PDOSMetadata(
+            mode="nonspin", orbital_resolution="l", spin_axis=None,
+            source_format="DOSCAR")
+
+    with mock.patch(
+        "core.services.calculation_worker.DataLoader.load_spin_all_with_metadata",
+        side_effect=fake_load,
+    ):
+        worker.run()
+
+    assert isinstance(captured[0], PDOSInputContext)
+    assert captured[0].authorized_paths == (
+        "D:/calc/DOSCAR", "D:/authorized/POSCAR", "D:/authorized/INCAR")
+
+
 # ── Fixtures ────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -251,8 +307,8 @@ class TestInputValidationAndWindowEdges:
             energy, rho, ef=0.0, custom_range=(0.25, 1.75))
         clipped_energy = np.array([0.25, 1.0, 1.75])
         clipped_dos = clipped_energy.copy()
-        expected = (np.trapz(clipped_energy * clipped_dos, clipped_energy)
-                    / np.trapz(clipped_dos, clipped_energy))
+        expected = (np.trapezoid(clipped_energy * clipped_dos, clipped_energy)
+                    / np.trapezoid(clipped_dos, clipped_energy))
         assert center == pytest.approx(expected, abs=1e-12)
 
 

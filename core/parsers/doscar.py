@@ -42,10 +42,13 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from core.exceptions import DbandError
-from core.pdos_metadata import PDOSMetadata
+from core.exceptions import (
+    AmbiguousLayoutError, AtomSelectionError, DbandError, FileIntegrityError,
+    StructureMismatchError, UnsupportedLayoutError,
+)
+from core.pdos_metadata import PDOSCapabilities, PDOSInputContext, PDOSMetadata
 from core.parsers.common import (
-    _load_structure_near,
+    _load_structure_file,
     _resolve_atom_indices,
 )
 from core.parsers.constants import (
@@ -61,21 +64,23 @@ _LORBIT11_ORBS = s_orb_names + p_orb_names + d_orb_names + f_orb_names
 _LORBIT10_ORBS = ["s", "p", "d", "f"]
 
 
-def _nearby_noncollinear_hint(filepath: str) -> Optional[bool]:
-    """Read VASP output metadata needed to resolve an ambiguous DOSCAR row.
+def _metadata_noncollinear_hint(
+    filepath: str, *, metadata_path: Optional[str] = None,
+) -> Optional[bool]:
+    """Read explicitly authorized metadata for an ambiguous DOSCAR row.
 
     DOSCAR does not encode LORBIT separately.  A 16-column non-spin total
     row is therefore ambiguous between LORBIT=11 scalar DOS and LORBIT=10
     noncollinear four-component DOS.  Prefer ``vasprun.xml`` because it is
-    generated output, then fall back to the nearby INCAR.  If neither records
-    the flags, callers must reject the ambiguous layout instead of guessing.
+    generated output or INCAR may be supplied explicitly. If no authorized
+    metadata records the flags, callers reject the layout instead of guessing.
     """
-    directory = os.path.dirname(os.path.abspath(filepath)) or "."
+    if not metadata_path:
+        return None
     values: Dict[str, bool] = {}
-    for filename in ("vasprun.xml", "INCAR"):
-        candidate = os.path.join(directory, filename)
-        if not os.path.isfile(candidate):
-            continue
+    candidate = metadata_path
+    filename = os.path.basename(candidate)
+    if os.path.isfile(candidate):
         try:
             with open(candidate, "r", encoding="utf-8", errors="ignore") as fh:
                 for line_number, line in enumerate(fh):
@@ -97,23 +102,23 @@ def _nearby_noncollinear_hint(filepath: str) -> Optional[bool]:
                     if filename == "vasprun.xml" and line_number > 20000:
                         break
         except OSError:
-            continue
+            pass
 
-        if values.get("LNONCOLLINEAR") is True or values.get("LSORBIT") is True:
-            return True
+    if values.get("LNONCOLLINEAR") is True or values.get("LSORBIT") is True:
+        return True
 
     if values:
         return False
     return None
 
 
-def _nearby_saxis(filepath: str) -> Tuple[float, float, float]:
-    """Return VASP's normalized SAXIS, or its documented default (0,0,1)."""
-    directory = os.path.dirname(os.path.abspath(filepath)) or "."
-    for filename in ("vasprun.xml", "INCAR"):
-        candidate = os.path.join(directory, filename)
-        if not os.path.isfile(candidate):
-            continue
+def _metadata_saxis(
+    filepath: str, *, metadata_path: Optional[str] = None,
+) -> Tuple[float, float, float]:
+    """Return SAXIS from an authorized file, or VASP's default (0,0,1)."""
+    candidate = metadata_path
+    if candidate and os.path.isfile(candidate):
+        filename = os.path.basename(candidate)
         try:
             with open(candidate, "r", encoding="utf-8", errors="ignore") as fh:
                 for line_number, line in enumerate(fh):
@@ -134,7 +139,7 @@ def _nearby_saxis(filepath: str) -> Tuple[float, float, float]:
                     if filename == "vasprun.xml" and line_number > 20000:
                         break
         except OSError:
-            continue
+            pass
     return (0.0, 0.0, 1.0)
 
 
@@ -196,10 +201,10 @@ def _classify_pdos_layout(
 
         if scalar is not None and noncollinear is not None:
             if noncollinear_hint is None:
-                raise DbandError(
-                    f"ambiguous projected DOS layout: {n_cols} columns can be "
-                    "non-spin lm-resolved or noncollinear l-resolved. Provide "
-                    "matching INCAR or vasprun.xml metadata (LNONCOLLINEAR/LSORBIT).")
+                raise AmbiguousLayoutError(
+                    "DOSCAR", n_cols,
+                    "Provide matching INCAR or vasprun.xml metadata "
+                    "(LNONCOLLINEAR/LSORBIT).")
             return noncollinear if noncollinear_hint else scalar
         if noncollinear is not None:
             if noncollinear_hint is False:
@@ -214,9 +219,9 @@ def _classify_pdos_layout(
                     "the projected DOS has no total/m1/m2/m3 components.")
             return scalar
 
-    raise DbandError(
-        f"unsupported projected DOS layout: {n_cols} columns; refusing to "
-        "guess orbital or spin-column mapping.")
+    raise UnsupportedLayoutError(
+        "DOSCAR", n_cols,
+        "Refusing to guess orbital or spin-column mapping.")
 
 
 def _project_noncollinear_spin(
@@ -278,24 +283,24 @@ def _read_doscar_raw(filepath: str):
         lines = fh.readlines()
 
     if len(lines) < 7:
-        raise DbandError(f"{filepath}: DOSCAR too short ({len(lines)} lines).")
+        raise FileIntegrityError(f"{filepath}: DOSCAR too short ({len(lines)} lines).")
 
     header = lines[5].split()
     if len(header) < 5:
-        raise DbandError(
+        raise FileIntegrityError(
             f"{filepath}: malformed DOSCAR header line 6: {lines[5]!r}")
     try:
         nedos = int(float(header[2]))
         efermi = float(header[3])
     except (ValueError, IndexError):
-        raise DbandError(
+        raise FileIntegrityError(
             f"{filepath}: cannot read NEDOS/EFERMI from header: {lines[5]!r}")
 
     # Total DOS block.
     total_start = 6
     total_block = lines[total_start:total_start + nedos]
     if len(total_block) < nedos:
-        raise DbandError(
+        raise FileIntegrityError(
             f"{filepath}: total DOS truncated (have {len(total_block)}, "
             f"expected {nedos}).")
 
@@ -342,20 +347,20 @@ def _parse_float_block(
         try:
             row = [float(p) for p in parts]
         except ValueError as exc:
-            raise DbandError(
+            raise FileIntegrityError(
                 f"Invalid numeric value in {context}: {ln!r}") from exc
         if width == 0:
             width = len(row)
         elif len(row) != width:
             # Ragged row — stop to avoid silently misaligning columns.
-            raise DbandError(
+            raise FileIntegrityError(
                 f"Ragged {context}: expected {width} columns, "
                 f"got {len(row)} in row {len(rows) + 1}.")
         rows.append(row)
     if not rows:
-        raise DbandError(f"No numeric data found in {context}.")
+        raise FileIntegrityError(f"No numeric data found in {context}.")
     if expected_rows is not None and len(rows) != expected_rows:
-        raise DbandError(
+        raise FileIntegrityError(
             f"Truncated {context}: parsed {len(rows)} rows, "
             f"expected {expected_rows}.")
     return np.asarray(rows, dtype=np.float64)
@@ -450,32 +455,57 @@ def parse_doscar_spin_all(
     orbitals: Optional[List[str]] = None,
     *,
     return_metadata: bool = False,
+    input_context: Optional[PDOSInputContext] = None,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], float]:
     """Parse DOSCAR -> (energy, rho_up, rho_dn, rho_total, efermi).
 
     ``rho_dn`` mirrors the raw VASP sign convention (negative magnitudes);
     ``rho_total`` combines magnitudes (``|up|+|dn|``).
     """
+    context = input_context or PDOSInputContext(filepath, "DOSCAR")
     target_orbs = list(orbitals) if orbitals else list(all_orb_names)
     energy, _total, per_atom, efermi, is_spin = _read_doscar_raw(filepath)
+    if not per_atom:
+        raise FileIntegrityError(
+            f"{filepath}: DOSCAR contains no site-projected DOS blocks. "
+            "Set LORBIT=10 or LORBIT=11 and rerun VASP.")
 
     def finish(rho_up, rho_dn, rho_total, *, mode: str, resolution: str):
         result = (energy, rho_up, rho_dn, rho_total, efermi)
         if not return_metadata:
             return result
-        axis = _nearby_saxis(filepath) if mode == "noncollinear" else None
+        axis = (_metadata_saxis(
+            filepath, metadata_path=context.metadata_path)
+            if mode == "noncollinear" else None)
+        warnings = () if struct is not None else (
+            "No structure file was authorized; use numeric indices or select one explicitly.",)
+        capabilities = PDOSCapabilities(
+            source_format="DOSCAR", vasp_version=None, spin_mode=mode,
+            orbital_resolution=resolution,
+            available_orbitals=layout.orbitals if layout else (),
+            structure_available=struct is not None,
+            atom_selection_modes=("index", "element") if struct is not None else ("index",),
+            field_source="doscar_layout", warnings=warnings)
         return (*result, PDOSMetadata(
             mode=mode, orbital_resolution=resolution, spin_axis=axis,
-            source_format="DOSCAR"))
+            source_format="DOSCAR", capabilities=capabilities))
 
-    struct = _load_structure_near(filepath)
+    struct = None
+    if context.structure_path:
+        try:
+            struct = _load_structure_file(context.structure_path)
+        except Exception as exc:
+            raise FileIntegrityError(
+                f"Cannot read explicitly selected structure "
+                f"'{context.structure_path}': {exc}") from exc
     if struct is not None and len(struct) != len(per_atom):
         # Definite misalignment — indices would silently map to wrong atoms.
-        raise DbandError(
-            f"{filepath}: POSCAR/CONTCAR site count ({len(struct)}) != DOSCAR "
+        raise StructureMismatchError(
+            f"{filepath}: explicitly selected structure '{context.structure_path}' "
+            f"has {len(struct)} sites but DOSCAR "
             f"PDOS ion count ({len(per_atom)}). Atom indices cannot be aligned "
             "— results would be meaningless. Ensure the DOSCAR ships with the "
-            "matching POSCAR/CONTCAR from the same calculation."
+            "explicitly selected structure from the same calculation."
         )
 
     if struct is not None:
@@ -484,7 +514,8 @@ def parse_doscar_spin_all(
         # No structure file: only numeric indices are meaningful.
         target_indices = _resolve_numeric_indices(atoms_str, len(per_atom))
 
-    noncollinear_hint = _nearby_noncollinear_hint(filepath)
+    noncollinear_hint = _metadata_noncollinear_hint(
+        filepath, metadata_path=context.metadata_path)
     layout = (_classify_pdos_layout(
         per_atom[0].shape[1], total_is_spin=is_spin,
         noncollinear_hint=noncollinear_hint)
@@ -528,6 +559,8 @@ def parse_doscar(
     atoms_str: str,
     spin_mode: str,
     orbitals: Optional[List[str]] = None,
+    *,
+    input_context: Optional[PDOSInputContext] = None,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], float]:
     """Parse DOSCAR -> (energy, rho_dict, efermi) for a single spin channel.
 
@@ -539,7 +572,7 @@ def parse_doscar(
     no additional ``_ensure_positive`` call is needed.
     """
     energy, rho_up, rho_dn, rho_total, efermi = parse_doscar_spin_all(
-        filepath, atoms_str, orbitals=orbitals)
+        filepath, atoms_str, orbitals=orbitals, input_context=input_context)
 
     if spin_mode == "up":
         rho = rho_up
@@ -568,6 +601,6 @@ def _resolve_numeric_indices(atoms_str: str, n_blocks: int) -> List[int]:
                 target.extend(range(int(lo) - 1, min(int(hi), n_blocks)))
     target = sorted(set(target))
     if not target:
-        raise DbandError(
+        raise AtomSelectionError(
             f"Atom selection '{atoms_str}' matched no ions (1–{n_blocks}).")
     return target

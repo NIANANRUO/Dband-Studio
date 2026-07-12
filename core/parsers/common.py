@@ -169,8 +169,24 @@ def detect_file_type(filepath: str) -> Optional[str]:
         return _detect_cache[filepath]
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            head = f.read(500)
-        result = "vasprun.xml" if ("<modeling>" in head or "<i name=" in head) else None
+            head_lines = [f.readline() for _ in range(6)]
+        head = "".join(head_lines)
+        if "<modeling>" in head or "<i name=" in head:
+            result = "vasprun.xml"
+        else:
+            result = None
+            first = head_lines[0].split() if head_lines else []
+            header = head_lines[5].split() if len(head_lines) >= 6 else []
+            try:
+                first_ok = len(first) >= 4 and all(
+                    int(float(value)) >= 0 for value in first[:4])
+                header_ok = len(header) >= 5 and int(float(header[2])) > 0
+                for value in header[:5]:
+                    float(value)
+                if first_ok and header_ok:
+                    result = "DOSCAR"
+            except (ValueError, OverflowError):
+                pass
     except Exception:
         result = None
     if len(_detect_cache) >= _MAX_DETECT_CACHE:
@@ -197,16 +213,9 @@ def get_pymatgen_classes() -> dict:
     }
 
 
-def _load_structure_near(filepath: str):
-    """Try to load a pymatgen Structure from POSCAR/CONTCAR near *filepath*."""
+def _load_structure_file(filepath: str):
+    """Load only the structure path explicitly authorized by the user."""
     _ensure_pymatgen()
     if not HAS_PYMATGEN:
-        return None
-    for name in ("POSCAR", "CONTCAR"):
-        candidate = os.path.join(os.path.dirname(filepath), name)
-        if os.path.exists(candidate):
-            try:
-                return _Poscar.from_file(candidate).structure
-            except Exception:
-                pass
-    return None
+        raise ImportError("pymatgen is required to read a structure file")
+    return _Poscar.from_file(filepath).structure

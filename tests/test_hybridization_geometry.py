@@ -69,6 +69,91 @@ def test_hybridization_worker_emits_parse_and_render_progress():
     assert any("Rendering" in phase for phase in phases)
 
 
+def test_lm_total_request_expands_to_real_components():
+    from core.orbital_selection import resolve_orbital_request
+    from core.pdos_metadata import PDOSCapabilities
+
+    caps = PDOSCapabilities(
+        source_format="DOSCAR", vasp_version=None, spin_mode="nonspin",
+        orbital_resolution="lm",
+        available_orbitals=("s", "py", "pz", "px", "dxy", "dyz", "dz2", "dxz", "dx2-y2"),
+        structure_available=False, atom_selection_modes=("index",),
+        field_source="doscar_layout", warnings=())
+
+    request = resolve_orbital_request(["d"], caps)
+    assert request.parser_orbitals == ("dxy", "dyz", "dz2", "dxz", "dx2-y2")
+    assert request.output_components["d"] == request.parser_orbitals
+
+
+def test_unavailable_orbital_request_is_rejected_instead_of_zero_filled():
+    from core.exceptions import OrbitalUnavailableError
+    from core.orbital_selection import resolve_orbital_request
+    from core.pdos_metadata import PDOSCapabilities
+
+    caps = PDOSCapabilities(
+        source_format="DOSCAR", vasp_version=None, spin_mode="nonspin",
+        orbital_resolution="l", available_orbitals=("s", "p", "d", "f"),
+        structure_available=False, atom_selection_modes=("index",),
+        field_source="doscar_layout", warnings=())
+    with pytest.raises(OrbitalUnavailableError):
+        resolve_orbital_request(["dxy"], caps)
+
+
+def test_fragment_panel_disables_unavailable_suborbitals(qapp):
+    from models.app_state import AppState
+    from ui.hybridization_win import FragmentPanel
+
+    state = AppState()
+    state.file_entries = [{
+        "label": "LORBIT10", "path": r"D:\calc\DOSCAR",
+        "capabilities": {
+            "orbital_resolution": "l", "available_orbitals": ("s", "p", "d", "f"),
+            "spin_mode": "nonspin", "source_format": "DOSCAR",
+        }, "inspection_error": "",
+    }]
+    panel = FragmentPanel("Fragment", state)
+    panel.refresh_sources()
+
+    assert panel._orbital_checks["d"].isEnabled()
+    assert not panel._orbital_checks["dxy"].isEnabled()
+    assert "unavailable" in panel._orbital_checks["dxy"].toolTip().lower()
+
+
+def test_hybridization_worker_caches_materialized_lm_total(monkeypatch):
+    from core.pdos_metadata import PDOSCapabilities
+    from core.services.hybridization_worker import HybridizationWorker
+
+    caps = PDOSCapabilities(
+        source_format="DOSCAR", vasp_version=None, spin_mode="nonspin",
+        orbital_resolution="lm",
+        available_orbitals=("dxy", "dyz", "dz2", "dxz", "dx2-y2"),
+        structure_available=False, atom_selection_modes=("index",),
+        field_source="doscar_layout", warnings=())
+    calls = []
+    components = {
+        name: np.full(2, index + 1.0)
+        for index, name in enumerate(caps.available_orbitals)
+    }
+    monkeypatch.setattr(
+        "core.services.hybridization_worker.DataLoader.inspect", lambda _fp: caps)
+    monkeypatch.setattr(
+        "core.services.hybridization_worker.DataLoader.load_spin_all",
+        lambda fp, atoms, orbitals=None: (
+            calls.append(tuple(orbitals)) or np.array([-1.0, 1.0]),
+            components, {name: np.zeros(2) for name in components}, components, 0.0))
+
+    worker = HybridizationWorker.__new__(HybridizationWorker)
+    worker._local_cache = {}
+    worker._shared_cache = None
+    params = ("sample", "missing-DOSCAR", "1", ["d"], "total", "sample")
+    first = worker._parse_with_cache(params)
+    second = worker._parse_with_cache(params)
+
+    np.testing.assert_allclose(first[1]["d"], [15.0, 15.0])
+    np.testing.assert_allclose(second[1]["d"], [15.0, 15.0])
+    assert len(calls) == 1
+
+
 def test_fragment_source_change_emits_an_input_changed_signal(qapp):
     """Changing DOSCAR to vasprun.xml must invalidate an old hybridization plot."""
     from models.app_state import AppState
@@ -183,4 +268,74 @@ def test_main_window_marks_results_stale_when_integration_method_changes(qapp):
     message = window.statusBar().currentMessage()
     assert "Simpson" in message
     assert "Run" in message
+    window.close()
+
+
+def test_main_window_states_honest_d_projection_semantics(qapp):
+    from PySide6.QtWidgets import QLabel
+    from ui.main_window import MainWindow
+
+    window = MainWindow()
+    labels = [label.text() for label in window.findChildren(QLabel)]
+    semantic_text = " ".join(labels)
+    assert "3d, 4d, or 5d" in semantic_text
+    assert "VASP" in semantic_text
+    window.close()
+
+
+def test_main_window_title_exposes_running_version(qapp):
+    from ui.main_window import MainWindow
+    from utils.helpers import get_app_version
+
+    window = MainWindow()
+    assert f"v{get_app_version()}" in window.windowTitle()
+    window.close()
+
+
+def test_main_window_left_controls_scroll_instead_of_forcing_window_height(qapp):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QScrollArea
+    from ui.main_window import MainWindow
+
+    window = MainWindow()
+    window.resize(1300, 850)
+    window.show()
+    qapp.processEvents()
+
+    assert isinstance(window.left_scroll, QScrollArea)
+    assert window.left_scroll.widgetResizable()
+    assert window.left_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    assert window.minimumSizeHint().height() <= 850
+    assert window.height() <= 850
+    window.close()
+
+
+def test_main_window_compact_controls_fit_their_text(qapp):
+    from PySide6.QtWidgets import QAbstractButton, QComboBox
+    from ui.main_window import MainWindow
+
+    window = MainWindow()
+    window.resize(1300, 850)
+    window.show()
+    qapp.processEvents()
+
+    controls = [
+        *window.left_panel.findChildren(QAbstractButton),
+        *window.left_panel.findChildren(QComboBox),
+    ]
+    assert controls
+    for control in controls:
+        text = control.text() if isinstance(control, QAbstractButton) else control.currentText()
+        if not text:
+            continue
+        text_width = control.fontMetrics().horizontalAdvance(text.replace("&", ""))
+        extra_width = 30 if isinstance(control, QAbstractButton) else 44
+        assert control.width() >= text_width + extra_width, (
+            f"{type(control).__name__} text is clipped: {text!r}, "
+            f"width={control.width()}, required={text_width + extra_width}"
+        )
+        assert control.height() >= control.fontMetrics().height() + 10, (
+            f"{type(control).__name__} text is vertically clipped: {text!r}, "
+            f"height={control.height()}"
+        )
     window.close()

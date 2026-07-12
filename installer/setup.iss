@@ -1,9 +1,9 @@
 ; Inno Setup script for DBand Studio
 ; Build: ISCC.exe installer/setup.iss
-; Output: dist/DBandStudio_Setup.exe
+; Output: dist/DBandStudio_Setup_v1.2.2.exe
 
 #define AppName       "DBand Studio"
-#define AppVersion    "1.1.5"
+#define AppVersion    "1.2.2"
 #define AppPublisher  "D-Band Center Analyzer"
 #define AppURL        ""
 #define AppExeName    "DBandStudio.exe"
