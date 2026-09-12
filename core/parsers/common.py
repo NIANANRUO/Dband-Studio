@@ -115,33 +115,53 @@ def _detect_has_spin(rho_dn: Dict[str, np.ndarray]) -> bool:
     return False
 
 
-def _resolve_atom_indices(atoms_str: str, struct) -> list:
-    """Parse atom selection string -> list of 0-based site indices."""
-    target_sites = []
-    if atoms_str.strip():
-        parts = [p.strip() for p in atoms_str.split(",")]
-        for p in parts:
-            if re.match(r"^\d+$", p):
-                idx = int(p) - 1
-                if 0 <= idx < len(struct):
-                    target_sites.append(idx)
-            elif re.match(r"^\d+-\d+$", p):
-                start, end = map(int, p.split("-"))
-                # Clamp to struct size to avoid generating out-of-range
-                # indices that would IndexError downstream.
-                target_sites.extend(range(start - 1, min(end, len(struct))))
-            else:
-                for i, site in enumerate(struct):
-                    if _site_symbol(site) == p:
-                        target_sites.append(i)
-    else:
-        target_sites = list(range(len(struct)))
+def atom_selection_tokens(text: str) -> list[str]:
+    """Normalize pasted separators and reject incomplete selections."""
+    import unicodedata
+    text = unicodedata.normalize("NFKC", text or "").strip()
+    text = text.translate(str.maketrans({"、": ",", ";": ",", "–": "-", "—": "-", "−": "-"}))
+    text = re.sub(r"\s*-\s*", "-", text)
+    if not text:
+        return []
+    parts = [p.strip() for p in text.split(",")]
+    if any(not p for p in parts):
+        from core.exceptions import AtomSelectionError
+        raise AtomSelectionError("Empty atom entry in selection.")
+    return [token for part in parts for token in part.split()]
 
-    target_sites = sorted(set(target_sites))
-    if not target_sites:
-        available = sorted(set(_site_symbol(s) for s in struct))
-        raise AtomNotFoundError(atoms_str, available_species=available)
-    return target_sites
+
+def resolve_selection(text: str, count: int, symbols=None) -> list[int]:
+    """Strict 1-based selection, preserving order for ordered pair matching."""
+    from core.exceptions import AtomSelectionError
+    tokens = atom_selection_tokens(text)
+    if not tokens:
+        return list(range(count))
+    indices = []
+    for token in tokens:
+        if re.fullmatch(r"\d+", token):
+            values = [int(token)]
+        elif re.fullmatch(r"\d+-\d+", token):
+            lo, hi = map(int, token.split("-"))
+            if lo < 1 or hi < lo or hi > count:
+                raise AtomSelectionError(f"Invalid atom range '{token}'; valid indices: 1–{count}.")
+            values = range(lo, hi + 1)
+        elif symbols is not None and re.fullmatch(r"[A-Z][a-z]?", token):
+            values = [i + 1 for i, symbol in enumerate(symbols) if symbol == token]
+            if not values:
+                raise AtomNotFoundError(token, available_species=sorted(set(symbols)))
+        else:
+            raise AtomSelectionError(f"Invalid atom selection '{token}'. Use indices, ranges, or available elements.")
+        for value in values:
+            if not 1 <= value <= count:
+                raise AtomSelectionError(f"Atom {value} is outside valid indices 1–{count}.")
+            if value - 1 not in indices:
+                indices.append(value - 1)
+    return indices
+
+
+def _resolve_atom_indices(atoms_str: str, struct) -> list:
+    """Parse atom selection without silently discarding invalid entries."""
+    return resolve_selection(atoms_str, len(struct), [_site_symbol(site) for site in struct])
 
 
 # Simple cache for detect_file_type header reads (FIFO eviction to prevent OOM)

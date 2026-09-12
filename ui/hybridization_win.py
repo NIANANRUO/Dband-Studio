@@ -12,21 +12,24 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QGridLayout,
     QGroupBox, QLabel, QLineEdit, QComboBox, QCheckBox, QPushButton,
     QScrollArea, QFileDialog, QMessageBox, QTabWidget, QFrame,
-    QDoubleSpinBox
+    QDoubleSpinBox, QDialog, QColorDialog, QSizePolicy
 )
+from PySide6.QtGui import QColor
 from PySide6.QtCore import Qt, Signal
 from matplotlib.figure import Figure
+from matplotlib.colors import to_hex, to_rgb
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
 from core.exceptions import (
-    DbandError, FileTypeError, OrbitalMissingError,
+    DbandError, FileTypeError, OrbitalMissingError, AtomSelectionError,
     VASPKitAtomError, AtomNotFoundError, MissingProjectedDOSError,
 )
 from core.parsers import s_orb_names, p_orb_names, d_orb_names, f_orb_names
 from core.calculator import calc_metrics
+from core.orbital_selection import non_overlapping_orbitals
 from utils.styling import annotate_center
 from core.services.hybridization_worker import HybridizationWorker
-from core.services.exporter import DataExporter
+from core.services.exporter import DataExporter, selected_export_path
 from core.loader import DataLoader
 from core.pdos_metadata import input_context_from_entry
 from utils.styling import (
@@ -36,8 +39,13 @@ from utils.styling import (
     BTN_HYB_COLOR, DECOMP_COLORS, THEMES_CONFIG,
 )
 from utils.helpers import format_orbital_display
+from utils.export_paths import ensure_export_directory, remember_export_directory
 from ui.widgets.range_selector import RangeSelectorWidget
 from ui.widgets.collapsible import CollapsibleWidget
+from ui.i18n import (
+    combo_value, find_combo_value, get_language_manager, localized_stylesheet,
+    set_combo_value, set_translated_text, tr,
+)
 
 
 class FragmentPanel(QFrame):
@@ -55,19 +63,10 @@ class FragmentPanel(QFrame):
         self._build_ui()
 
     def _make_connections(self, chk_all_btn, check_list):
-        def on_all_toggled(checked):
-            if checked:
-                for c in check_list:
-                    c.blockSignals(True)
-                    c.setChecked(False)
-                    c.blockSignals(False)
+        def on_all_toggled(_checked):
             self.orbitals_changed.emit()
             
         def on_indiv_toggled():
-            if any(c.isChecked() for c in check_list):
-                chk_all_btn.blockSignals(True)
-                chk_all_btn.setChecked(False)
-                chk_all_btn.blockSignals(False)
             self.orbitals_changed.emit()
             
         chk_all_btn.toggled.connect(on_all_toggled)
@@ -83,12 +82,14 @@ class FragmentPanel(QFrame):
         row1.addWidget(QLabel("Alias (optional):"))
         self.entry_alias = QLineEdit()
         self.entry_alias.setPlaceholderText("e.g. Metal")
+        self.entry_alias.textChanged.connect(lambda _text: self.input_changed.emit())
         row1.addWidget(self.entry_alias)
         layout.addLayout(row1)
 
         row_src = QHBoxLayout()
         row_src.addWidget(QLabel("Data Source:"))
         self.combo_file = QComboBox()
+        self.combo_file.setProperty("_i18n_skip_items", True)
         self.combo_file.currentIndexChanged.connect(self._on_source_changed)
         row_src.addWidget(self.combo_file)
         layout.addLayout(row_src)
@@ -143,13 +144,13 @@ class FragmentPanel(QFrame):
         layout.addWidget(self.orbs_widget)
 
     def refresh_sources(self):
-        current = self.combo_file.currentText()
+        current = combo_value(self.combo_file)
         self.combo_file.clear()
         items = []
         for i, entry in enumerate(self.state.file_entries, 1):
             items.append(f"{i}. {entry['label']}")
         self.combo_file.addItems(items)
-        idx = self.combo_file.findText(current)
+        idx = find_combo_value(self.combo_file, current)
         if idx >= 0:
             self.combo_file.setCurrentIndex(idx)
         self._apply_source_capabilities()
@@ -225,12 +226,17 @@ class FragmentPanel(QFrame):
         return text if text else self.title_text
 
 class HybridizationWindow(QMainWindow):
+    _FOLLOW_OVERLAP_FRAG1 = "Follow Overlap (Frag 1)"
+    _FOLLOW_OVERLAP_FRAG2 = "Follow Overlap (Frag 2)"
+
     def __init__(self, state, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Orbital Hybridization Analysis (Async)")
         self.resize(1100, 800)
         self.state = state
         self._worker = None
+        self._batch_display = None
+        self._batch_dialog = None
         self._parsed_cache = {}
         self._cached_data = None
         self._has_plot_data = False
@@ -238,6 +244,8 @@ class HybridizationWindow(QMainWindow):
         self._is_dark_mode = False
         self._integration_method = "trapezoid"
         self._build_ui()
+        set_combo_value(self.combo_theme_top, self.state.hybridization_style.get(
+            "overlap", "Theme 1 (Red-Gray)"))
         self._refresh_sources()
 
     def _build_ui(self):
@@ -328,7 +336,7 @@ class HybridizationWindow(QMainWindow):
         self.combo_integ_method = QComboBox()
         self.combo_integ_method.addItems(["trapezoid", "simpson"])
         # Set to current global method
-        idx = self.combo_integ_method.findText(self._integration_method)
+        idx = find_combo_value(self.combo_integ_method, self._integration_method)
         if idx >= 0:
             self.combo_integ_method.setCurrentIndex(idx)
         self.combo_integ_method.currentIndexChanged.connect(self._on_integ_method_changed)
@@ -345,6 +353,11 @@ class HybridizationWindow(QMainWindow):
         self.integ_custom_range.range_changed.connect(self._on_setting_changed)
         self.integ_custom_range.setVisible(False)
         integ_layout.addWidget(self.integ_custom_range, 2, 0, 1, 2)
+
+        self.chk_centers_all = QCheckBox("Show d-band Centers on All Panels")
+        self.chk_centers_all.setTristate(True)
+        self.chk_centers_all.setCheckState(Qt.Checked)
+        integ_layout.addWidget(self.chk_centers_all, 3, 0, 1, 2)
         
         l3.addWidget(integ_grp)
 
@@ -395,7 +408,7 @@ class HybridizationWindow(QMainWindow):
         layout_top.addWidget(self.y_range_top)
         self.combo_theme_top = QComboBox()
         self.combo_theme_top.addItems(list(THEMES_CONFIG.get("2_color", {}).keys()))
-        self.combo_theme_top.currentIndexChanged.connect(self._on_setting_changed)
+        self.combo_theme_top.currentIndexChanged.connect(self._on_overlap_theme_changed)
         layout_top.addWidget(QLabel("Theme:"))
         layout_top.addWidget(self.combo_theme_top)
         self.btn_sync_x = QPushButton("Sync X-Range to All")
@@ -418,9 +431,11 @@ class HybridizationWindow(QMainWindow):
         layout_mid.addWidget(self.x_range_mid)
         layout_mid.addWidget(self.y_range_mid)
         self.combo_theme_mid = QComboBox()
-        self.combo_theme_mid.currentIndexChanged.connect(self._on_setting_changed)
+        self.combo_theme_mid.setToolTip(tr("Manual orbital colors take priority over themes. Restore defaults to clear them."))
+        self.combo_theme_mid.currentIndexChanged.connect(lambda: self._save_fragment_style(0))
         layout_mid.addWidget(QLabel("Theme:"))
         layout_mid.addWidget(self.combo_theme_mid)
+        self._add_color_controls(layout_mid, 0)
         layout_mid.addStretch()
         self.settings_tabs.addTab(tab_mid, "Frag 1")
 
@@ -438,11 +453,21 @@ class HybridizationWindow(QMainWindow):
         layout_bot.addWidget(self.x_range_bot)
         layout_bot.addWidget(self.y_range_bot)
         self.combo_theme_bot = QComboBox()
-        self.combo_theme_bot.currentIndexChanged.connect(self._on_setting_changed)
+        self.combo_theme_bot.setToolTip(tr("Manual orbital colors take priority over themes. Restore defaults to clear them."))
+        self.combo_theme_bot.currentIndexChanged.connect(lambda: self._save_fragment_style(1))
         layout_bot.addWidget(QLabel("Theme:"))
         layout_bot.addWidget(self.combo_theme_bot)
+        self._add_color_controls(layout_bot, 1)
         layout_bot.addStretch()
         self.settings_tabs.addTab(tab_bot, "Frag 2")
+
+        self.chk_centers_all.stateChanged.connect(
+            self._set_all_center_visibility)
+        for center_check in (
+            self.chk_center_top, self.chk_center_mid, self.chk_center_bot,
+        ):
+            center_check.stateChanged.connect(
+                self._sync_global_center_visibility)
 
         settings_layout.addWidget(self.settings_tabs)
         l3.addWidget(settings_grp)
@@ -474,6 +499,9 @@ class HybridizationWindow(QMainWindow):
         self._update_bot_themes()
 
         # Action button at bottom
+        self.btn_batch = QPushButton("Batch analysis…")
+        self.btn_batch.clicked.connect(self._open_batch)
+        left_vbox.addWidget(self.btn_batch)
         self.btn_plot = QPushButton("🚀 Run Comprehensive Analysis")
         self.btn_plot.setFixedHeight(45)
         self.btn_plot.setProperty("isPrimary", "true")
@@ -522,6 +550,37 @@ class HybridizationWindow(QMainWindow):
 
         root.addWidget(self.right_tabs, 1)
 
+    def _open_batch(self):
+        if self._worker and self._worker.isRunning():
+            return
+        if self._batch_dialog is None:
+            from ui.hybridization_batch_dialog import HybridizationBatchDialog
+            self._batch_dialog = HybridizationBatchDialog(self)
+            self._batch_dialog.result_selected.connect(self._show_batch_result)
+        self._batch_dialog.show()
+        self._batch_dialog.raise_()
+
+    def _show_batch_result(self, task, data):
+        self._batch_display = (','.join(map(str, task.left)), ','.join(map(str, task.right)), task.spin)
+        self._cached_data = data
+        self._has_plot_data = True
+        self._render_plot(*data)
+        from core.services.hybridization_worker import GeometryAnalysisResult
+        self._update_distance_table(GeometryAnalysisResult(None,
+            tr('Batch result: bond lengths are not included. Use single analysis for geometry.')))
+        self.statusBar().showMessage(task.title())
+
+    def closeEvent(self, event):
+        if self._batch_dialog and ((self._batch_dialog.worker and self._batch_dialog.worker.isRunning())
+                                   or self._batch_dialog._export_queue is not None):
+            self._batch_dialog._cancel()
+            event.ignore()
+            return
+        if self._worker and getattr(self._worker, "isRunning", lambda: False)():
+            event.ignore()
+            return
+        super().closeEvent(event)
+
     def _refresh_sources(self):
         self.frag1.refresh_sources()
         self.frag2.refresh_sources()
@@ -529,16 +588,16 @@ class HybridizationWindow(QMainWindow):
     # ---------- async parsing ----------
 
     def _on_integ_method_changed(self):
-        self._integration_method = self.combo_integ_method.currentText()
+        self._integration_method = combo_value(self.combo_integ_method)
         self._on_setting_changed()
         
     def _on_integ_range_changed(self):
-        is_custom = self.combo_integ_range.currentText() == "Custom"
+        is_custom = combo_value(self.combo_integ_range) == "Custom"
         self.integ_custom_range.setVisible(is_custom)
         self._on_setting_changed()
 
     def _get_integration_limits(self):
-        mode = self.combo_integ_range.currentText()
+        mode = combo_value(self.combo_integ_range)
         if mode == "< Ef":
             return True, None, "< Ef"
         elif mode == "Custom":
@@ -553,7 +612,7 @@ class HybridizationWindow(QMainWindow):
         if self._has_plot_data and self._cached_data:
             self._render_plot(*self._cached_data)
         else:
-            self.statusBar().showMessage("Waiting for plot generation...")
+            self.statusBar().showMessage(tr("Waiting for plot generation..."))
 
     def _on_fragment_input_changed(self):
         """Prevent stale DOS/annotations from surviving an input mutation."""
@@ -564,7 +623,8 @@ class HybridizationWindow(QMainWindow):
         # orbitals changed: that would make old DOS look like fresh data.
         for ax in (self._ax_top, self._ax_mid, self._ax_bot):
             ax.clear()
-        self.fig.suptitle("Input changed — generate a new hybridization analysis", fontsize=11)
+        self.fig.suptitle(
+            tr("Input changed — generate a new hybridization analysis"), fontsize=11)
         self.canvas.draw_idle()
 
         from PySide6.QtWidgets import QTableWidgetItem
@@ -575,12 +635,12 @@ class HybridizationWindow(QMainWindow):
         self.table_dist.setItem(0, 0, item)
         self.table_dist.setSpan(0, 0, 1, 3)
         self.btn_export_dist.setEnabled(False)
-        self.statusBar().showMessage(
+        self.statusBar().showMessage(tr(
             "Fragment input changed. Generate a new analysis before interpreting the plot."
-        )
+        ))
 
     def _get_spin_mode(self):
-        text = self.combo_spin.currentText()
+        text = combo_value(self.combo_spin)
         if text == "Spin-Up":
             return "up"
         elif text == "Spin-Down":
@@ -602,6 +662,7 @@ class HybridizationWindow(QMainWindow):
         if self._worker and self._worker.isRunning():
             return  # Prevent duplicate submissions
 
+        self._batch_display = None
         p1 = self._collect_fragment_params(self.frag1)
         p2 = self._collect_fragment_params(self.frag2)
 
@@ -616,7 +677,7 @@ class HybridizationWindow(QMainWindow):
             return
 
         cutoff = self.spin_cutoff.value()
-        mode_str = self.combo_geom_mode.currentText()
+        mode_str = combo_value(self.combo_geom_mode)
         mode = "shortest" if "Shortest" in mode_str else "all"
         
         bond_atoms1 = self.entry_bond_atoms1.text().strip()
@@ -635,13 +696,14 @@ class HybridizationWindow(QMainWindow):
         self._has_plot_data = False
 
         self.btn_plot.setEnabled(False)
-        self.btn_plot.setText("Analyzing...")
-        self.statusBar().showMessage("Parsing data and calculating geometry in background...")
+        set_translated_text(self.btn_plot, "Analyzing...")
+        self.statusBar().showMessage(tr(
+            "Parsing data and calculating geometry in background..."))
 
         self._worker = HybridizationWorker(
             p1, p2, geom_params, self._parsed_cache, self.state.parsed_cache, parent=self)
         self._worker.request_token = request_token
-        self._worker.progress.connect(self.statusBar().showMessage)
+        self._worker.progress.connect(self._show_translated_status)
         # Bound QObject slots are queued onto this window's GUI thread.  Do
         # not replace these with lambdas: a lambda executes in the worker
         # thread and makes matplotlib/Qt rendering hang or crash.
@@ -653,15 +715,20 @@ class HybridizationWindow(QMainWindow):
     def _on_data_ready(self, data1, data2, geometry_result):
         """Background parse complete — render on main thread (~10ms)."""
         if self._worker is None or self._worker.request_token != self._request_token:
-            self.statusBar().showMessage(
+            self.statusBar().showMessage(tr(
                 "Discarded stale analysis result after fragment input changed."
-            )
+            ))
             return
         self._cached_data = (data1, data2)
         self._has_plot_data = True
         self._render_plot(data1, data2)
         self._update_distance_table(geometry_result)
-        self.statusBar().showMessage("Hybridization plot and geometry analysis generated.")
+        self.statusBar().showMessage(tr(
+            "Hybridization plot and geometry analysis generated."))
+
+    def _show_translated_status(self, message):
+        """Display worker progress in the active UI language on the GUI thread."""
+        self.statusBar().showMessage(tr(message))
         
     def _update_distance_table(self, geometry_result):
         from PySide6.QtWidgets import QTableWidgetItem
@@ -742,7 +809,7 @@ class HybridizationWindow(QMainWindow):
 
     # Exception classes that warrant a warning (not critical) dialog
     _WARN_EXCEPTIONS = (
-        FileTypeError, DbandError, OrbitalMissingError,
+        FileTypeError, DbandError, OrbitalMissingError, AtomSelectionError,
         VASPKitAtomError, AtomNotFoundError, MissingProjectedDOSError,
     )
 
@@ -772,7 +839,7 @@ class HybridizationWindow(QMainWindow):
     def _on_worker_finished(self):
         """Re-enable button after worker completes (success or error)."""
         self.btn_plot.setEnabled(True)
-        self.btn_plot.setText("\U0001f52c Generate Hybridization Plot")
+        set_translated_text(self.btn_plot, "\U0001f52c Generate Hybridization Plot")
 
     # ---------- rendering (main thread only) ----------
 
@@ -783,22 +850,191 @@ class HybridizationWindow(QMainWindow):
         elif n == 5: return THEMES_CONFIG.get("5_color_dos", {})
         else: return THEMES_CONFIG.get("multi_color", {})
 
+    def _on_overlap_theme_changed(self):
+        """Change only the overlap and fragments explicitly following it."""
+        self.state.hybridization_style["overlap"] = combo_value(self.combo_theme_top)
+        self._on_setting_changed()
+
+    def _set_all_center_visibility(self, state):
+        """Apply the prominent global d-band-center switch to every panel."""
+        if state == Qt.PartiallyChecked.value:
+            return
+        checked = state == Qt.Checked.value
+        for center_check in (
+            self.chk_center_top, self.chk_center_mid, self.chk_center_bot,
+        ):
+            center_check.blockSignals(True)
+            center_check.setChecked(checked)
+            center_check.blockSignals(False)
+        self._on_setting_changed()
+
+    def _sync_global_center_visibility(self):
+        """Reflect independent per-panel switches in the global control."""
+        states = [
+            check.isChecked() for check in (
+                self.chk_center_top, self.chk_center_mid, self.chk_center_bot,
+            )
+        ]
+        if all(states):
+            global_state = Qt.Checked
+        elif any(states):
+            global_state = Qt.PartiallyChecked
+        else:
+            global_state = Qt.Unchecked
+        self.chk_centers_all.blockSignals(True)
+        self.chk_centers_all.setCheckState(global_state)
+        self.chk_centers_all.blockSignals(False)
+        self._on_setting_changed()
+
+    @staticmethod
+    def _coordinated_fragment_colors(base_color, count):
+        """Return a smooth, related palette anchored to an Overlap color."""
+        if count <= 1:
+            return [base_color]
+
+        base = np.asarray(to_rgb(base_color))
+        white = np.ones(3)
+        # Start with the exact overlap color, then move gradually toward
+        # lighter tints.  The aggregate curve and orbital decomposition read
+        # as one fragment without making multiple orbitals indistinguishable.
+        tint_amounts = np.linspace(0.0, 0.55, count)
+        colors = []
+        for tint_amount in tint_amounts:
+            rgb = base * (1.0 - tint_amount) + white * tint_amount
+            colors.append(to_hex(np.clip(rgb, 0.0, 1.0)))
+        return colors
+
+    _DEFAULT_ORBITAL_THEME = "Default orbital colors"
+
+    def _fragment_style(self, index):
+        return self.state.hybridization_style.setdefault(str(index), {})
+
+    def _save_fragment_style(self, index):
+        combo = (self.combo_theme_mid, self.combo_theme_bot)[index]
+        self._fragment_style(index)["theme"] = combo_value(combo)
+        self._on_setting_changed()
+
+    def _add_color_controls(self, layout, index):
+        for title, callback in (
+            ("Orbital colors…", lambda: self._show_orbital_colors(index)),
+            ("Import main PDOS colors", lambda: self._import_pdos_colors(index)),
+            ("Restore default colors", lambda: self._reset_fragment_colors(index)),
+        ):
+            button = QPushButton(title)
+            button.clicked.connect(callback)
+            layout.addWidget(button)
+        check = QCheckBox("Fill total curves")
+        check.setToolTip(tr("Fill totals alongside components"))
+        check.setChecked(bool(self._fragment_style(index).get("fill_totals", False)))
+        check.toggled.connect(lambda value: self._set_total_fill(index, value))
+        layout.addWidget(check)
+        setattr(self, f"_total_fill_{index}", check)
+
+    def _set_total_fill(self, index, value):
+        self._fragment_style(index)["fill_totals"] = value
+        self._on_setting_changed()
+
+    def _import_pdos_colors(self, index):
+        overrides = self._fragment_style(index).setdefault("colors", {})
+        for orb in d_orb_names:
+            color = self.state.orb_colors.get(orb)
+            if isinstance(color, str) and QColor(color).isValid():
+                overrides[orb] = color
+        self._on_setting_changed()
+
+    def _reset_fragment_colors(self, index):
+        self._fragment_style(index).clear()
+        combo = (self.combo_theme_mid, self.combo_theme_bot)[index]
+        set_combo_value(combo, self._DEFAULT_ORBITAL_THEME)
+        getattr(self, f"_total_fill_{index}").setChecked(False)
+        self._on_setting_changed()
+
+    def _fragment_color_map(self, index):
+        # Stable identities: neither selection order nor totals consume colors.
+        style = self._fragment_style(index)
+        selected = style.get("theme", self._DEFAULT_ORBITAL_THEME)
+        top = THEMES_CONFIG.get("2_color", {}).get(
+            combo_value(self.combo_theme_top), [HYB_FRAG1_COLOR, HYB_FRAG2_COLOR])
+        colors = {"s": "#607D8B", "p": top[index], "d": top[index], "f": "#795548"}
+        groups = (p_orb_names, d_orb_names, f_orb_names)
+        palettes = (
+            THEMES_CONFIG["3_color"]["Spring (Red-Yellow-Mint)"],
+            THEMES_CONFIG["5_color_dos"]["Distinct Categorical"],
+            DECOMP_COLORS[5:12],
+        )
+        theme_palette = next((group[selected] for group in THEMES_CONFIG.values()
+                              if selected in group), None)
+        following = selected in (self._FOLLOW_OVERLAP_FRAG1, self._FOLLOW_OVERLAP_FRAG2)
+        for orbitals, default in zip(groups, palettes):
+            palette = (self._coordinated_fragment_colors(top[index], len(orbitals))
+                       if following else theme_palette or default)
+            colors.update({orb: palette[i % len(palette)] for i, orb in enumerate(orbitals)})
+        for orb, color in style.get("colors", {}).items():
+            if orb in colors and isinstance(color, str) and QColor(color).isValid():
+                colors[orb] = color
+        return colors
+
+    def _show_orbital_colors(self, index):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(tr("Orbital colors…"))
+        layout = QVBoxLayout(dialog)
+        panel = (self.frag1, self.frag2)[index]
+        orbitals = panel.get_selected_orbitals()
+        if not orbitals:
+            layout.addWidget(QLabel(tr("Select orbitals in the Fragment tab first.")))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        rows = QVBoxLayout(content)
+        for orb in orbitals:
+            button = QPushButton()
+            def refresh(btn=button, name=orb):
+                color = self._fragment_color_map(index)[name]
+                label = f"{name}-total" if name in ("s", "p", "d", "f") else format_orbital_display(name)
+                btn.setText(f"{label}  {color}")
+                c = QColor(color)
+                foreground = "#000000" if c.lightnessF() > 0.55 else "#FFFFFF"
+                btn.setStyleSheet(f"background-color: {color}; color: {foreground}; padding: 6px;")
+            def pick(_checked=False, name=orb, update=refresh):
+                color = QColorDialog.getColor(QColor(self._fragment_color_map(index)[name]), dialog, name)
+                if color.isValid():
+                    self._fragment_style(index).setdefault("colors", {})[name] = color.name()
+                    update()
+                    self._on_setting_changed()
+            refresh()
+            button.clicked.connect(pick)
+            rows.addWidget(button)
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+        close = QPushButton(tr("Close"))
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        dialog.resize(320, 420)
+        dialog.exec()
+
+    def _update_fragment_themes(self, combo, orbital_count, follow_label):
+        index = 0 if follow_label == self._FOLLOW_OVERLAP_FRAG1 else 1
+        current = self._fragment_style(index).get("theme", self._DEFAULT_ORBITAL_THEME)
+        names = list(dict.fromkeys(name for group in THEMES_CONFIG.values() for name in group))
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems([self._DEFAULT_ORBITAL_THEME, follow_label] + names)
+        combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        combo.setMinimumWidth(0)
+        set_combo_value(combo, current if current in names + [follow_label] else self._DEFAULT_ORBITAL_THEME)
+        combo.blockSignals(False)
+        get_language_manager().apply(combo)
+
     def _update_mid_themes(self):
         n = len(self.frag1.get_selected_orbitals())
-        tdict = self._get_theme_dict_for_n(n)
-        self.combo_theme_mid.blockSignals(True)
-        self.combo_theme_mid.clear()
-        self.combo_theme_mid.addItems(list(tdict.keys()))
-        self.combo_theme_mid.blockSignals(False)
+        self._update_fragment_themes(
+            self.combo_theme_mid, n, self._FOLLOW_OVERLAP_FRAG1)
         self._on_setting_changed()
 
     def _update_bot_themes(self):
         n = len(self.frag2.get_selected_orbitals())
-        tdict = self._get_theme_dict_for_n(n)
-        self.combo_theme_bot.blockSignals(True)
-        self.combo_theme_bot.clear()
-        self.combo_theme_bot.addItems(list(tdict.keys()))
-        self.combo_theme_bot.blockSignals(False)
+        self._update_fragment_themes(
+            self.combo_theme_bot, n, self._FOLLOW_OVERLAP_FRAG2)
         self._on_setting_changed()
 
     def _sync_x_ranges(self):
@@ -837,6 +1073,12 @@ class HybridizationWindow(QMainWindow):
         """
         e1, rho1_up, rho1_dn, orbs1, label1 = data1
         e2, rho2_up, rho2_dn, orbs2, label2 = data2
+        atoms1 = self._batch_display[0] if self._batch_display else self.frag1.get_atoms_text().strip()
+        atoms2 = self._batch_display[1] if self._batch_display else self.frag2.get_atoms_text().strip()
+        display1 = f"{label1} [Atoms: {atoms1}]" if atoms1 else label1
+        display2 = f"{label2} [Atoms: {atoms2}]" if atoms2 else label2
+        aggregate_orbs1 = non_overlapping_orbitals(orbs1)
+        aggregate_orbs2 = non_overlapping_orbitals(orbs2)
 
         # Merge for export CSV
         rho1_export = {}
@@ -850,8 +1092,8 @@ class HybridizationWindow(QMainWindow):
             d = rho2_dn.get(o, np.zeros_like(e2)) if rho2_dn else 0
             rho2_export[o] = u + d
 
-        self._plot_e1, self._plot_rho1, self._plot_orbs1, self._plot_label1 = e1, rho1_export, orbs1, label1
-        self._plot_e2, self._plot_rho2, self._plot_orbs2, self._plot_label2 = e2, rho2_export, orbs2, label2
+        self._plot_e1, self._plot_rho1, self._plot_orbs1, self._plot_label1 = e1, rho1_export, orbs1, display1
+        self._plot_e2, self._plot_rho2, self._plot_orbs2, self._plot_label2 = e2, rho2_export, orbs2, display2
 
         show_center_top = self.chk_center_top.isChecked()
         show_center_mid = self.chk_center_mid.isChecked()
@@ -865,21 +1107,15 @@ class HybridizationWindow(QMainWindow):
         y_min_bot, y_max_bot = self.y_range_bot.get_range()
 
         # Resolve themes and colors
-        t_top = self.combo_theme_top.currentText()
+        t_top = combo_value(self.combo_theme_top)
         colors_top = THEMES_CONFIG.get("2_color", {}).get(t_top, [HYB_FRAG1_COLOR, HYB_FRAG2_COLOR])
-        c_frag1 = colors_top[0] if len(colors_top) > 0 else HYB_FRAG1_COLOR
-        c_frag2 = colors_top[1] if len(colors_top) > 1 else HYB_FRAG2_COLOR
+        overlap_frag1 = colors_top[0] if len(colors_top) > 0 else HYB_FRAG1_COLOR
+        overlap_frag2 = colors_top[1] if len(colors_top) > 1 else HYB_FRAG2_COLOR
 
-        t_mid = self.combo_theme_mid.currentText()
-        dict_mid = self._get_theme_dict_for_n(len(orbs1))
-        colors_mid = dict_mid.get(t_mid, DECOMP_COLORS)
-        if not colors_mid: colors_mid = DECOMP_COLORS
+        colors_mid = self._fragment_color_map(0)
+        colors_bot = self._fragment_color_map(1)
+        c_frag1, c_frag2 = overlap_frag1, overlap_frag2
 
-        t_bot = self.combo_theme_bot.currentText()
-        dict_bot = self._get_theme_dict_for_n(len(orbs2))
-        colors_bot = dict_bot.get(t_bot, DECOMP_COLORS)
-        if not colors_bot: colors_bot = DECOMP_COLORS
-        
         lw = self.spin_lw.value()
         do_fill = self.chk_fill.isChecked()
         fill_alpha = self.spin_alpha.value()
@@ -923,48 +1159,57 @@ class HybridizationWindow(QMainWindow):
                 if fill: ax.fill_between(e, -t_dn, alpha=fill_alpha, color=color)
                 ax.plot(e, -t_dn, color=color, lw=lw, label=label)
 
-        def _plot_fragment_decomposition(ax, e, rho_up, rho_dn, orbs, colors, label_title):
-            for i, o in enumerate(orbs):
-                c = colors[i % len(colors)]
+        def _plot_fragment_decomposition(ax, e, rho_up, rho_dn, orbs, colors, label_title, fragment_index):
+            for o in orbs:
+                c = colors[o]
+                components = {"p": p_orb_names, "d": d_orb_names, "f": f_orb_names}.get(o, ())
+                mixed_total = any(child in orbs for child in components)
+                curve_lw = lw * 1.5 if mixed_total else lw
+                curve_fill = do_fill and (not mixed_total or self._fragment_style(fragment_index).get("fill_totals", False))
+                curve_label = f"{o}-total" if o in ("s", "p", "d", "f") else format_orbital_display(o)
                 d_up = rho_up.get(o, np.zeros_like(e)) if rho_up else None
                 d_dn = rho_dn.get(o, np.zeros_like(e)) if rho_dn else None
                 if rho_up and rho_dn:
-                    if do_fill:
+                    if curve_fill:
                         ax.fill_between(e, d_up, alpha=fill_alpha, color=c)
                         ax.fill_between(e, -d_dn, alpha=fill_alpha, color=c)
-                    ax.plot(e, d_up, lw=lw, color=c, label=format_orbital_display(o))
-                    ax.plot(e, -d_dn, lw=lw, color=c, ls="--")
+                    ax.plot(e, d_up, lw=curve_lw, color=c, label=curve_label)
+                    ax.plot(e, -d_dn, lw=curve_lw, color=c, ls="--")
                 elif rho_up:
-                    if do_fill: ax.fill_between(e, d_up, alpha=fill_alpha, color=c)
-                    ax.plot(e, d_up, lw=lw, color=c, label=format_orbital_display(o))
+                    if curve_fill: ax.fill_between(e, d_up, alpha=fill_alpha, color=c)
+                    ax.plot(e, d_up, lw=curve_lw, color=c, label=curve_label)
                 elif rho_dn:
-                    if do_fill: ax.fill_between(e, -d_dn, alpha=fill_alpha, color=c)
-                    ax.plot(e, -d_dn, lw=lw, color=c, label=format_orbital_display(o))
+                    if curve_fill: ax.fill_between(e, -d_dn, alpha=fill_alpha, color=c)
+                    ax.plot(e, -d_dn, lw=curve_lw, color=c, label=curve_label)
             zero_color = "#666666" if self._is_dark_mode else "black"
             ax.axhline(0, color=zero_color, lw=0.4, zorder=0)
             ax.axvline(0, color='gray', ls="--", lw=0.6, zorder=0)
             ax.set_ylabel("DOS")
             ax.set_title(label_title, fontsize=9, loc="left")
-            spin_mode = self._get_spin_mode()
+            spin_mode = self._batch_display[2] if self._batch_display else self._get_spin_mode()
             leg_loc = "lower right" if spin_mode == "down" else "upper right"
             ax.legend(fontsize=8, ncol=5, loc=leg_loc, frameon=False)
 
         # ═══ Step 1: Draw all data first ═══
         ax_top = self._ax_top
-        plot_spin(ax_top, e1, rho1_up, rho1_dn, orbs1, c_frag1, f"{label1} ({'+'.join(orbs1)})", fill=do_fill)
-        plot_spin(ax_top, e2, rho2_up, rho2_dn, orbs2, c_frag2, f"{label2} ({'+'.join(orbs2)})", fill=do_fill)
+        plot_spin(ax_top, e1, rho1_up, rho1_dn, aggregate_orbs1, c_frag1, f"{display1} ({'+'.join(aggregate_orbs1)})", fill=do_fill)
+        plot_spin(ax_top, e2, rho2_up, rho2_dn, aggregate_orbs2, c_frag2, f"{display2} ({'+'.join(aggregate_orbs2)})", fill=do_fill)
         
         zero_color = "#666666" if self._is_dark_mode else "black"
         ax_top.axhline(0, color=zero_color, lw=0.4, zorder=0)
         ax_top.axvline(0, color="gray", ls="--", lw=0.6, zorder=0)
         ax_top.set_ylabel("DOS")
-        ax_top.set_title("Hybridization Overlap", fontsize=10, loc="left")
-        spin_mode = self._get_spin_mode()
+        ax_top.set_title(tr("Hybridization Overlap"), fontsize=10, loc="left")
+        spin_mode = self._batch_display[2] if self._batch_display else self._get_spin_mode()
         leg_loc = "lower right" if spin_mode == "down" else "upper right"
         ax_top.legend(fontsize=9, loc=leg_loc, frameon=False)
 
-        _plot_fragment_decomposition(self._ax_mid, e1, rho1_up, rho1_dn, orbs1, colors_mid, f"Fragment 1: {label1}")
-        _plot_fragment_decomposition(self._ax_bot, e2, rho2_up, rho2_dn, orbs2, colors_bot, f"Fragment 2: {label2}")
+        _plot_fragment_decomposition(
+            self._ax_mid, e1, rho1_up, rho1_dn, orbs1, colors_mid,
+            tr(f"Fragment 1: {display1}"), 0)
+        _plot_fragment_decomposition(
+            self._ax_bot, e2, rho2_up, rho2_dn, orbs2, colors_bot,
+            tr(f"Fragment 2: {display2}"), 1)
 
         # ═══ Step 2: Autoscale to compute natural Y limits from data ═══
         ax_top.autoscale_view()
@@ -984,11 +1229,11 @@ class HybridizationWindow(QMainWindow):
             if y_min_top is None or y_max_top is None:
                 data_list_top = []
                 if e1 is not None:
-                    data_list_top.append((e1, [_sum_orbs(rho1_up, orbs1, e1), 
-                                               -_sum_orbs(rho1_dn, orbs1, e1) if rho1_dn else None]))
+                    data_list_top.append((e1, [_sum_orbs(rho1_up, aggregate_orbs1, e1),
+                                               -_sum_orbs(rho1_dn, aggregate_orbs1, e1) if rho1_dn else None]))
                 if e2 is not None:
-                    data_list_top.append((e2, [_sum_orbs(rho2_up, orbs2, e2), 
-                                               -_sum_orbs(rho2_dn, orbs2, e2) if rho2_dn else None]))
+                    data_list_top.append((e2, [_sum_orbs(rho2_up, aggregate_orbs2, e2),
+                                               -_sum_orbs(rho2_dn, aggregate_orbs2, e2) if rho2_dn else None]))
                 self._autoscale_y_for_x_range(ax_top, x_min_top, x_max_top, data_list=data_list_top)
         if y_min_top is not None and y_max_top is not None:
             ax_top.set_ylim(y_min_top, y_max_top)
@@ -1027,35 +1272,36 @@ class HybridizationWindow(QMainWindow):
 
         if show_center_top or show_center_mid:
             c1, _, _, _ = calc_metrics(e1, rho1_export, ef=0.0,
-                                        orb_names=orbs1,
+                                        orb_names=aggregate_orbs1,
                                         limit_fermi=limit_fermi,
                                         custom_range=custom_range,
                                         method=self._integration_method)
         if show_center_top or show_center_bot:
             c2, _, _, _ = calc_metrics(e2, rho2_export, ef=0.0,
-                                        orb_names=orbs2,
+                                        orb_names=aggregate_orbs2,
                                         limit_fermi=limit_fermi,
                                         custom_range=custom_range,
                                         method=self._integration_method)
 
         # ═══ Step 5: Draw center annotations LAST (after ranges are final) ═══
         if show_center_top:
-            hyb_name = f"{label1}-{label2}"
+            hyb_name = f"{display1}-{display2}"
             y_off = 0
             if c1 is not None and not np.isnan(c1):
                 y_off = annotate_center(ax_top, c1, f"\u03b5({hyb_name}, {range_str})", HYB_METAL_CENTER_COLOR, CENTER_LW, CENTER_FONTSIZE, y_off)
             if c2 is not None and not np.isnan(c2):
                 y_off = annotate_center(ax_top, c2, f"\u03b5({hyb_name}, {range_str})", HYB_LIGAND_CENTER_COLOR, CENTER_LW, CENTER_FONTSIZE, y_off)
         if show_center_mid and c1 is not None and not np.isnan(c1):
-            annotate_center(self._ax_mid, c1, f"\u03b5({label1}, {range_str})", HYB_METAL_CENTER_COLOR, CENTER_LW, CENTER_FONTSIZE)
+            annotate_center(self._ax_mid, c1, f"\u03b5({display1}, {range_str})", HYB_METAL_CENTER_COLOR, CENTER_LW, CENTER_FONTSIZE)
         if show_center_bot and c2 is not None and not np.isnan(c2):
-            annotate_center(self._ax_bot, c2, f"\u03b5({label2}, {range_str})", HYB_LIGAND_CENTER_COLOR, CENTER_LW, CENTER_FONTSIZE)
+            annotate_center(self._ax_bot, c2, f"\u03b5({display2}, {range_str})", HYB_LIGAND_CENTER_COLOR, CENTER_LW, CENTER_FONTSIZE)
 
         # ═══ Labels & title (constrained_layout handles spacing) ═══
         ax_top.set_xlabel(r"E - E$_{f}$ (eV)")
         self._ax_mid.set_xlabel(r"E - E$_{f}$ (eV)")
         self._ax_bot.set_xlabel(r"E - E$_{f}$ (eV)")
-        self.fig.suptitle(f"Orbital Hybridization: {label1} vs {label2}", fontsize=11)
+        self.fig.suptitle(
+            tr(f"Orbital Hybridization: {display1} vs {display2}"), fontsize=11)
         self._apply_dark_mode()
         self.canvas.draw()
 
@@ -1083,13 +1329,33 @@ class HybridizationWindow(QMainWindow):
         if not self._has_plot_data:
             QMessageBox.warning(self, "Warning", "Generate a plot first.")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save Hybridization Chart",
-                                              "hybridization_chart.png",
-                                              "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)")
+        try:
+            initial_dir = ensure_export_directory(self.state.file_entries)
+        except OSError as exc:
+            QMessageBox.critical(
+                self, "Export Folder Error",
+                f"Cannot open the preferred export folder:\n{exc}")
+            return
+        initial_path = initial_dir / "hybridization_chart.png"
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Save Hybridization Chart", str(initial_path),
+            "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)")
         if not path:
             return
-        DataExporter.save_figure(self.fig, path)
-        QMessageBox.information(self, "Success", f"Chart saved to:\n{path}")
+        selected_format = next(
+            (name.lower() for name in ("PNG", "PDF", "SVG")
+             if selected_filter.startswith(name)), "png")
+        output_path = selected_export_path(path, selected_format)
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            DataExporter.save_figure(self.fig, str(output_path))
+        except OSError as exc:
+            QMessageBox.critical(
+                self, "Save Failed", f"Cannot save chart:\n{exc}")
+            return
+        remember_export_directory(output_path.parent)
+        QMessageBox.information(
+            self, "Success", f"Chart saved to:\n{output_path}")
 
     def set_dark_mode(self, is_dark):
         self._is_dark_mode = is_dark
@@ -1097,13 +1363,13 @@ class HybridizationWindow(QMainWindow):
         # Apply dark mode to sub-components manually if needed
         from ui.theme_macos import LIGHT_GLASS_QSS, DARK_GLASS_QSS
         qss = DARK_GLASS_QSS if is_dark else LIGHT_GLASS_QSS
-        self.setStyleSheet(qss)
+        self.setStyleSheet(localized_stylesheet(qss))
         self._apply_dark_mode()
 
     def set_integration_method(self, method: str):
         """Set the numerical integration method for center annotations."""
         self._integration_method = method
-        idx = self.combo_integ_method.findText(method)
+        idx = find_combo_value(self.combo_integ_method, method)
         if idx >= 0:
             self.combo_integ_method.blockSignals(True)
             self.combo_integ_method.setCurrentIndex(idx)

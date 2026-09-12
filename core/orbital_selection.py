@@ -19,6 +19,26 @@ _TOTAL_COMPONENTS = {
 }
 
 
+def non_overlapping_orbitals(selected: Iterable[str]) -> Tuple[str, ...]:
+    """Return selected channels without double-counting total components.
+
+    The hybridization detail panels may display a synthesized ``p``/``d``
+    total at the same time as its component curves.  Aggregate overlap curves
+    and moment calculations must still count that shell only once, so a
+    selected total takes precedence over selected children from the same
+    shell.
+    """
+    ordered = tuple(dict.fromkeys(selected))
+    suppressed = {
+        component
+        for total, components in _TOTAL_COMPONENTS.items()
+        if total in ordered
+        for component in components
+        if component != total
+    }
+    return tuple(orbital for orbital in ordered if orbital not in suppressed)
+
+
 @dataclass(frozen=True)
 class ResolvedOrbitalRequest:
     parser_orbitals: Tuple[str, ...]

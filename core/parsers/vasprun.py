@@ -408,6 +408,7 @@ def parse_vasprun_spin_all(
     *,
     return_metadata: bool = False,
     input_context: Optional[PDOSInputContext] = None,
+    per_atom_output: Optional[dict] = None,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], float]:
     """Parse vasprun.xml once, returning (energy, rho_up, rho_dn, rho_total, ef).
     Uses lxml.etree.iterparse for high memory efficiency.
@@ -597,6 +598,11 @@ def parse_vasprun_spin_all(
             raise DbandError(
                 f"{filepath}: noncollinear PDOS unexpectedly contains a second "
                 "collinear spin set; refusing an ambiguous interpretation.")
+        if per_atom_output is not None:
+            for idx in target_indices:
+                up_i, dn_i, total_i = _accumulate_vasprun_noncollinear(
+                    raw_arrays, [idx], orb_fields, target_orbs)
+                per_atom_output[idx + 1] = (energy, up_i, dn_i, total_i, efermi)
         return finish(*_accumulate_vasprun_noncollinear(
             raw_arrays, list(target_indices), orb_fields, target_orbs),
             mode="noncollinear")
@@ -611,12 +617,21 @@ def parse_vasprun_spin_all(
                     f"{filepath}: selected atom {idx + 1} spin-down PDOS does not "
                     "match its spin-up grid or contains NaN/Inf.")
 
+        atom_up = {o: np.zeros_like(energy) for o in target_orbs}
+        atom_dn = {o: np.zeros_like(energy) for o in target_orbs}
         for i, field_name in enumerate(orb_fields):
             for oname, scale in _field_targets(field_name, target_orbs):
-                rho_up[oname] += np.abs(arr_up[:, i]) * scale
+                atom_up[oname] += np.abs(arr_up[:, i]) * scale
                 if arr_dn is not None:
-                    rho_dn[oname] += np.abs(arr_dn[:, i]) * scale
+                    atom_dn[oname] += np.abs(arr_dn[:, i]) * scale
                         
+        for orb in target_orbs:
+            rho_up[orb] += atom_up[orb]
+            rho_dn[orb] += atom_dn[orb]
+        if per_atom_output is not None:
+            per_atom_output[idx + 1] = (energy, atom_up, atom_dn,
+                {o: atom_up[o] + atom_dn[o] for o in target_orbs}, efermi)
+
     rho_up = _ensure_positive(rho_up)
     rho_dn = _ensure_positive(rho_dn)
     rho_total = {o: rho_up[o] + rho_dn[o] for o in target_orbs}

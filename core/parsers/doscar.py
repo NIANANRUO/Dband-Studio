@@ -456,6 +456,7 @@ def parse_doscar_spin_all(
     *,
     return_metadata: bool = False,
     input_context: Optional[PDOSInputContext] = None,
+    per_atom_output: Optional[dict] = None,
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, np.ndarray], float]:
     """Parse DOSCAR -> (energy, rho_up, rho_dn, rho_total, efermi).
 
@@ -521,6 +522,22 @@ def parse_doscar_spin_all(
         noncollinear_hint=noncollinear_hint)
               if per_atom else None)
 
+    if per_atom_output is not None:
+        for idx in target_indices:
+            if layout is not None and layout.mode == "noncollinear":
+                components_i = _accumulate_noncollinear(
+                    per_atom, [idx], target_orbs, noncollinear_hint=noncollinear_hint)
+                up_i, dn_i = {}, {}
+                for orb in target_orbs:
+                    up_i[orb], dn_i[orb] = _project_noncollinear_spin(
+                        components_i["total"][orb], components_i["m3"][orb])
+            else:
+                raw_up, raw_dn = _accumulate(per_atom, is_spin, [idx], target_orbs)
+                up_i = {o: np.abs(raw_up[o]) for o in target_orbs}
+                dn_i = {o: np.abs(raw_dn[o]) if is_spin else np.zeros_like(energy) for o in target_orbs}
+            per_atom_output[idx + 1] = (energy, up_i, dn_i,
+                {o: up_i[o] + dn_i[o] for o in target_orbs}, efermi)
+
     if layout is not None and layout.mode == "noncollinear":
         components = _accumulate_noncollinear(
             per_atom, target_indices, target_orbs,
@@ -584,23 +601,6 @@ def parse_doscar(
 
 
 def _resolve_numeric_indices(atoms_str: str, n_blocks: int) -> List[int]:
-    """Resolve a numeric-only atom selection without a structure file."""
-    atoms_str = (atoms_str or "").strip()
-    if not atoms_str:
-        return list(range(n_blocks))
-    target: List[int] = []
-    for p in atoms_str.split(","):
-        p = p.strip()
-        if p.isdigit():
-            idx = int(p) - 1
-            if 0 <= idx < n_blocks:
-                target.append(idx)
-        elif "-" in p and p.split("-")[0].isdigit():
-            lo, hi = p.split("-")[0], p.split("-")[-1]
-            if lo.isdigit() and hi.isdigit():
-                target.extend(range(int(lo) - 1, min(int(hi), n_blocks)))
-    target = sorted(set(target))
-    if not target:
-        raise AtomSelectionError(
-            f"Atom selection '{atoms_str}' matched no ions (1–{n_blocks}).")
-    return target
+    """Resolve numeric selections strictly when no structure is authorized."""
+    from core.parsers.common import resolve_selection
+    return resolve_selection(atoms_str, n_blocks)

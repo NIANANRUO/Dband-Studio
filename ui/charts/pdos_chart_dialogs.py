@@ -20,6 +20,7 @@ class PDOSDataDialog(FloatingConfigDialog):
         hbox_sys = QHBoxLayout()
         hbox_sys.addWidget(QLabel("System:"))
         self.combo_system = QComboBox()
+        self.combo_system.setProperty("_i18n_skip_items", True)
         self.combo_system.activated.connect(self._on_system_activated)
         hbox_sys.addWidget(self.combo_system)
         layout.addLayout(hbox_sys)

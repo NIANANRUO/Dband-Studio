@@ -20,6 +20,7 @@ class MultiPDOSDataDialog(FloatingConfigDialog):
         hbox1 = QHBoxLayout()
         hbox1.addWidget(QLabel("Systems:"))
         self.combo_systems = CheckableComboBox()
+        self.combo_systems.setProperty("_i18n_skip_items", True)
         self.combo_systems.setMinimumWidth(150)
         self.combo_systems.selection_changed.connect(lambda *args: self.real_time_update.emit())
         hbox1.addWidget(self.combo_systems)

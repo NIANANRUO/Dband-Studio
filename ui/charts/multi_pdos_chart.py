@@ -22,6 +22,10 @@ from utils.styling import THEMES_CONFIG, CENTER_COLOR, CENTER_LW, CENTER_FONTSIZ
 from utils.helpers import format_orbital_display
 from ui.widgets.axes_config_dialog import AxesConfigDialog
 from ui.charts.multi_pdos_chart_dialogs import MultiPDOSDataDialog, MultiPDOSStyleDialog
+from ui.i18n import (
+    SKIP_TRANSLATION_ROLE, combo_value, find_combo_value,
+    configure_matplotlib_language, get_language_manager, tr,
+)
 
 class MultiPDOSChartWidget(QWidget):
     """Matplotlib-based Multi-System PDOS chart widget."""
@@ -55,6 +59,7 @@ class MultiPDOSChartWidget(QWidget):
         matplotlib.rcParams['ytick.labelsize'] = 10
         matplotlib.rcParams['legend.fontsize'] = 9
         matplotlib.rcParams['figure.constrained_layout.use'] = True
+        configure_matplotlib_language()
         
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -174,21 +179,25 @@ class MultiPDOSChartWidget(QWidget):
         
     def _update_center_ref_combo(self):
         self.data_dlg.combo_center_ref.blockSignals(True)
-        curr_ref = self.data_dlg.combo_center_ref.currentText()
+        curr_ref = combo_value(self.data_dlg.combo_center_ref)
         self.data_dlg.combo_center_ref.clear()
         self.data_dlg.combo_center_ref.addItem("All Selected Systems")
         
         checked_labels = self.data_dlg.combo_systems.get_checked_items()
         for lbl in checked_labels:
             self.data_dlg.combo_center_ref.addItem(lbl)
+            self.data_dlg.combo_center_ref.setItemData(
+                self.data_dlg.combo_center_ref.count() - 1, True,
+                SKIP_TRANSLATION_ROLE)
             
         # Restore selection if possible
-        idx = self.data_dlg.combo_center_ref.findText(curr_ref)
+        idx = find_combo_value(self.data_dlg.combo_center_ref, curr_ref)
         if idx >= 0:
             self.data_dlg.combo_center_ref.setCurrentIndex(idx)
         else:
             self.data_dlg.combo_center_ref.setCurrentIndex(0)
         self.data_dlg.combo_center_ref.blockSignals(False)
+        get_language_manager().apply(self.data_dlg.combo_center_ref)
 
     def _on_redraw_request(self):
         """Redraw plot with current settings."""
@@ -216,14 +225,14 @@ class MultiPDOSChartWidget(QWidget):
             self.canvas.draw()
             return
             
-        orbital_target = self.data_dlg.combo_orbital.currentText()
-        spin_mode = self.data_dlg.combo_spin_mode.currentText()
+        orbital_target = combo_value(self.data_dlg.combo_orbital)
+        spin_mode = combo_value(self.data_dlg.combo_spin_mode)
         
         lw = self.style_dlg.spin_lw.value()
         do_fill = self.style_dlg.chk_fill.isChecked()
         alpha = self.style_dlg.spin_alpha.value()
         show_center = self.data_dlg.chk_show_center.isChecked()
-        center_ref = self.data_dlg.combo_center_ref.currentText()
+        center_ref = combo_value(self.data_dlg.combo_center_ref)
         
         for label in selected_labels:
             if label not in self._parsed_cache:
@@ -291,7 +300,9 @@ class MultiPDOSChartWidget(QWidget):
         self._ax.set_ylabel("DOS")
         
         title_target = orbital_target if orbital_target != "Total d-DOS" else "Total d"
-        self._ax.set_title(f"Multi-System {title_target} PDOS Comparison ({spin_mode})", fontsize=10, loc='left', pad=6)
+        self._ax.set_title(
+            tr(f"Multi-System {title_target} PDOS Comparison ({spin_mode})"),
+            fontsize=10, loc='left', pad=6)
             
         # Apply axes limits
         c = self.axes_config or {}

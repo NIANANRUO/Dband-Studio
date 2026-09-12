@@ -380,7 +380,7 @@ def test_workspace_migrates_old_entries_without_auxiliary_authorization():
     with pytest.warns(UserWarning):
         state.load_workspace(path)
 
-    assert state._WORKSPACE_VERSION == "1.1"
+    assert state._WORKSPACE_VERSION == "1.3"
     assert state.file_entries[0]["auxiliary_files"] == {
         "structure": None, "metadata": None, "spin_partner": None}
 

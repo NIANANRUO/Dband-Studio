@@ -15,6 +15,7 @@ from ui.charts.bar_chart_dialogs import (
     BarChartDataDialog, BarChartPatternDialog, BarChartLabelsDialog,
     BarChartAxesDialog, BarChartLegendDialog
 )
+from ui.i18n import combo_value, tr
 
 
 class BarChartWidget(QWidget):
@@ -211,13 +212,13 @@ class BarChartWidget(QWidget):
 
         # --- Read UI States ---
         # Pattern
-        theme_name = self.pattern_dlg.combo_theme.currentText()
+        theme_name = combo_value(self.pattern_dlg.combo_theme)
         colors = self.pattern_dlg.theme_dict.get(theme_name, BAR_COLORS)
         if not colors:
             colors = BAR_COLORS
         b_width = self.pattern_dlg.spin_bar_width.value()
         bar_gap_pct = self.pattern_dlg.spin_bar_gap.value() / 100.0
-        edge_c_mode = self.pattern_dlg.combo_edge_color.currentText()
+        edge_c_mode = combo_value(self.pattern_dlg.combo_edge_color)
         edge_w = self.pattern_dlg.spin_edge_width.value()
         alpha = self.pattern_dlg.slider_alpha.value() / 100.0
 
@@ -226,12 +227,12 @@ class BarChartWidget(QWidget):
         val_fs = self.labels_dlg.spin_val_fs.value()
         xtick_fs = self.labels_dlg.spin_xtick_fs.value()
         xtick_rot = self.labels_dlg.spin_xtick_rot.value()
-        val_pos = self.labels_dlg.combo_label_pos.currentText()
+        val_pos = combo_value(self.labels_dlg.combo_label_pos)
 
         # Axes — 4 independent tick visibilities
         spine_w = self.axes_dlg.spin_spine_width.value()
-        x_tick_dir = self.axes_dlg.combo_tick_dir_x.currentText()
-        y_tick_dir = self.axes_dlg.combo_tick_dir_y.currentText()
+        x_tick_dir = combo_value(self.axes_dlg.combo_tick_dir_x)
+        y_tick_dir = combo_value(self.axes_dlg.combo_tick_dir_y)
         bottom_ticks = self.axes_dlg.chk_bottom_ticks.isChecked()
         top_ticks = self.axes_dlg.chk_top_ticks.isChecked()
         left_ticks = self.axes_dlg.chk_left_ticks.isChecked()
@@ -243,7 +244,7 @@ class BarChartWidget(QWidget):
         show_leg = self.legend_dlg.chk_show_legend.isChecked()
         leg_fs = self.legend_dlg.spin_leg_fs.value()
         leg_scale = self.legend_dlg.spin_leg_scale.value()
-        leg_pos = self.legend_dlg.combo_leg_pos.currentText()
+        leg_pos = combo_value(self.legend_dlg.combo_leg_pos)
         leg_cols = self.legend_dlg.spin_leg_cols.value()
         leg_frame = self.legend_dlg.chk_leg_frame.isChecked()
 
@@ -290,7 +291,7 @@ class BarChartWidget(QWidget):
                 e_c = fill_c  # Same as Fill
 
             bars = ax.bar(
-                x + off, centers, w, label=rn,
+                x + off, centers, w, label=tr(rn),
                 color=fill_c, alpha=alpha,
                 edgecolor=e_c, linewidth=edge_w,
             )
@@ -322,8 +323,8 @@ class BarChartWidget(QWidget):
                             color="black", weight="bold",
                         )
 
-        ax.set_ylabel("d-band Center (eV)", fontsize=10, weight="bold")
-        ax.set_title("d-band Center Comparison", fontsize=11, weight="bold")
+        ax.set_ylabel(tr("d-band Center (eV)"), fontsize=10, weight="bold")
+        ax.set_title(tr("d-band Center Comparison"), fontsize=11, weight="bold")
         ax.set_xticks(x)
         if xtick_rot == 0:
             ax.set_xticklabels(labels, rotation=xtick_rot, ha="center",

@@ -109,6 +109,8 @@ class AppState:
         self.parsed_cache: MemoryAwareLRUCache = MemoryAwareLRUCache()
         self.orb_colors: Dict[str, str] = dict(DEFAULT_D_COLORS)
         self.active_theme: str = "Default Material"
+        self.hybridization_style: Dict[str, Any] = {}
+        self.hybridization_batch: Dict[str, Any] = {}
         # User calculation parameters (for workspace save/restore)
         self.params: Dict[str, Any] = {}
 
@@ -118,13 +120,14 @@ class AppState:
         self.results_data.clear()
         self.parsed_cache.clear()
         self.params.clear()
+        self.hybridization_batch.clear()
 
     # ── Workspace serialization ──────────────────────────────────────
 
     # NOTE: This is the *workspace file format* version, semantically
     # distinct from the application release version (see utils.helpers.get_app_version).
     # Bump this only when the JSON schema of save_workspace changes.
-    _WORKSPACE_VERSION = "1.1"
+    _WORKSPACE_VERSION = "1.3"
 
     def save_workspace(self, path: str) -> None:
         """Save workspace state to a JSON file.
@@ -138,6 +141,8 @@ class AppState:
             "results_data": [asdict(r) for r in self.results_data],
             "orb_colors": self.orb_colors,
             "active_theme": self.active_theme,
+            "hybridization_style": self.hybridization_style,
+            "hybridization_batch": self.hybridization_batch,
             "params": self.params,
         }
         with open(path, "w", encoding="utf-8") as f:
@@ -178,6 +183,8 @@ class AppState:
         ]
         self.orb_colors = data.get("orb_colors", dict(DEFAULT_D_COLORS))
         self.active_theme = data.get("active_theme", "Default Material")
+        self.hybridization_style = data.get("hybridization_style", {})
+        self.hybridization_batch = data.get("hybridization_batch", {})
         self.params = data.get("params", {})
         # parsed_cache stays cleared — user must re-run calculation
         self.parsed_cache.clear()

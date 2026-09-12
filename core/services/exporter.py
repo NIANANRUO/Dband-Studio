@@ -7,12 +7,70 @@ all export logic in one place.
 from __future__ import annotations
 
 import csv
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List
 
 import numpy as np
 
 from core.parsers import d_orb_names
 from models.results import DbandResult
+
+
+_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+@dataclass
+class BatchImageExportResult:
+    exported: List[str] = field(default_factory=list)
+    failures: List[tuple[str, str]] = field(default_factory=list)
+    cancelled: bool = False
+
+
+def safe_export_stem(value: str, fallback: str = "chart") -> str:
+    """Return a Windows-safe, human-readable filename stem."""
+    stem = _INVALID_FILENAME_CHARS.sub("_", str(value)).strip(" .")
+    stem = re.sub(r"\s+", "_", stem)
+    if not stem:
+        stem = fallback
+    if stem.upper() in _WINDOWS_RESERVED_NAMES:
+        stem = f"_{stem}"
+    return stem[:120].rstrip(" .") or fallback
+
+
+def available_export_path(directory: str | Path, stem: str, suffix: str) -> Path:
+    """Choose a non-overwriting path by appending _2, _3, ... as needed."""
+    directory = Path(directory)
+    suffix = suffix if suffix.startswith(".") else f".{suffix}"
+    safe_stem = safe_export_stem(stem)
+    candidate = directory / f"{safe_stem}{suffix.lower()}"
+    index = 2
+    while candidate.exists():
+        candidate = directory / f"{safe_stem}_{index}{suffix.lower()}"
+        index += 1
+    return candidate
+
+
+def selected_export_path(path: str | Path, selected_format: str = "png") -> Path:
+    """Normalize a save-dialog path to PNG, PDF, or SVG without overwriting."""
+    path = Path(path)
+    selected_format = selected_format.lower().lstrip(".")
+    if selected_format not in {"png", "pdf", "svg"}:
+        selected_format = "png"
+    supported_suffixes = {".png", ".pdf", ".svg"}
+    if path.suffix.lower() in supported_suffixes:
+        suffix = path.suffix.lower()
+        stem = path.stem
+    else:
+        suffix = f".{selected_format}"
+        stem = path.name
+    return available_export_path(path.parent, stem, suffix)
 
 
 class DataExporter:

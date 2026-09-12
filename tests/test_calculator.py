@@ -307,8 +307,11 @@ class TestInputValidationAndWindowEdges:
             energy, rho, ef=0.0, custom_range=(0.25, 1.75))
         clipped_energy = np.array([0.25, 1.0, 1.75])
         clipped_dos = clipped_energy.copy()
-        expected = (np.trapezoid(clipped_energy * clipped_dos, clipped_energy)
-                    / np.trapezoid(clipped_dos, clipped_energy))
+        trapezoid = getattr(np, "trapezoid", None)
+        if trapezoid is None:  # NumPy < 2.0 in the supported release env
+            trapezoid = np.trapz
+        expected = (trapezoid(clipped_energy * clipped_dos, clipped_energy)
+                    / trapezoid(clipped_dos, clipped_energy))
         assert center == pytest.approx(expected, abs=1e-12)
 
 

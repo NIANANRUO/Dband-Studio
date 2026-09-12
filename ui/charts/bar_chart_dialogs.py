@@ -19,6 +19,7 @@ class BarChartDataDialog(FloatingConfigDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel("Systems:"))
         self.combo_systems = CheckableComboBox()
+        self.combo_systems.setProperty("_i18n_skip_items", True)
         self.combo_systems.setMinimumWidth(150)
         self.combo_systems.selection_changed.connect(self.real_time_update.emit)
         row.addWidget(self.combo_systems)

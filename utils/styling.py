@@ -171,10 +171,15 @@ def annotate_center(
         ha = "right"
         x_text = center - offset
 
-    ax.text(x_text, 0.85,
+    # ``y_offset_idx`` is used when an axes has more than one center (for
+    # example, the two fragments in a hybridization overlap plot).  The old
+    # implementation accepted the value but ignored it for in-range centers,
+    # so nearby labels were drawn directly on top of each other.
+    y_pos = max(0.08, 0.88 - (y_offset_idx * 0.16))
+    ax.text(x_text, y_pos,
             f"{tag} = {center:.4f} eV",
             color=color, fontsize=fontsize, fontweight="bold",
             va="top", ha=ha, clip_on=True, transform=trans,
             bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.8))
 
-    return y_offset_idx
+    return y_offset_idx + 1

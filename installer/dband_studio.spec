@@ -28,10 +28,14 @@ a = Analysis(
     binaries=SCIPY_BINARIES,
     datas=[
         (str(PROJECT_ROOT / 'config' / 'themes.json'), 'config'),
+        (str(PROJECT_ROOT / 'pyproject.toml'), '.'),
+        (str(PROJECT_ROOT / 'docs' / 'BATCH_HYBRIDIZATION.md'), 'docs'),
         # Runtime UI resources are resolved relative to the frozen bundle.
         (str(PROJECT_ROOT / 'assets'), 'assets'),
     ] + PYMATGEN_DATA,
     hiddenimports=[
+        'core.services.hybridization_batch',
+        'ui.hybridization_batch_dialog',
         # pymatgen — lazy-loaded, must be explicit
         'pymatgen',
         'pymatgen.io',
@@ -74,6 +78,13 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
+        # Optional array backends and test frameworks are not application dependencies.
+        'torch',
+        'torchvision',
+        'torchaudio',
+        'tensorflow',
+        'pytest',
+        '_pytest',
         # numba is excluded because calculator.py no longer depends on it
         # (pure NumPy since v4.0). Excluding prevents indirect pulls via
         # scipy/pymatgen from inflating the bundle by ~80 MB.
@@ -92,6 +103,16 @@ a = Analysis(
         'pybtex',
     ],
 )
+
+# The unversioned ``icuuc.dll`` can be picked up from unrelated tools on PATH
+# and shadow Qt's own versioned ICU runtime.  Keep Qt's ``icuin78.dll``,
+# ``icuuc78.dll`` *and* ``icudt78.dll`` together: Qt6Core -> icuuc78.dll ->
+# icudt78.dll is a required dependency chain in the release environment.
+CONFLICTING_HOST_ICU_DLLS = {'icuuc.dll'}
+a.binaries = [
+    entry for entry in a.binaries
+    if Path(entry[0]).name.lower() not in CONFLICTING_HOST_ICU_DLLS
+]
 
 pyz = PYZ(a.pure, a.zipped_data)
 

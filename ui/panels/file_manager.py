@@ -17,6 +17,7 @@ from PySide6.QtGui import QColor
 from core.exceptions import AmbiguousLayoutError, DbandError
 from core.loader import DataLoader
 from core.pdos_metadata import input_context_from_entry
+from ui.i18n import combo_value, set_translated_text, tr
 
 
 class FileManagerPanel(QFrame):
@@ -117,7 +118,7 @@ class FileManagerPanel(QFrame):
         layout.addWidget(self.lbl_diagnostic)
 
     def get_file_type(self):
-        return self.combo_type.currentText()
+        return combo_value(self.combo_type)
 
     def add_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select Files", "", "All Files (*)")
@@ -369,16 +370,16 @@ class FileManagerPanel(QFrame):
             f"Authorized spin partner: {auxiliary.get('spin_partner') or 'none'}",
         ])
         QApplication.clipboard().setText("\n".join(lines))
-        self.btn_copy.setText("Copied")
+        set_translated_text(self.btn_copy, "Copied")
         self.btn_copy.setStyleSheet("color: #FFFFFF; background-color: #2E7D32;")
-        self.lbl_diagnostic.setText(
-            "Copied import details to the clipboard.")
+        self.lbl_diagnostic.setText(tr(
+            "Copied import details to the clipboard."))
         self.lbl_diagnostic.setStyleSheet(
             "font-size: 10px; color: #1B5E20; padding: 2px 4px; font-weight: bold;")
         QTimer.singleShot(2200, self._restore_copy_feedback)
 
     def _restore_copy_feedback(self):
-        self.btn_copy.setText("Copy Details")
+        set_translated_text(self.btn_copy, "Copy Details")
         self.btn_copy.setStyleSheet("")
         self.lbl_diagnostic.setStyleSheet(
             "font-size: 10px; color: #555555; padding: 2px 4px;")

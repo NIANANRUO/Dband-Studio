@@ -43,6 +43,7 @@ class ResultsTableWidget(QWidget):
 
         # --- Header Table ---
         self.header_table = QTableWidget()
+        self.header_table.setObjectName("ResultsHeaderTable")
         self.header_table.setColumnCount(15)
         self.header_table.setRowCount(2)
 

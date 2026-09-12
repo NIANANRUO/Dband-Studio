@@ -1,21 +1,27 @@
 """
 Main application window - assembles all UI components and orchestrates computation.
 """
+from pathlib import Path
+
 import numpy as np
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QProgressDialog,
     QPushButton, QSplitter, QMessageBox, QFileDialog, QGroupBox, QTabWidget,
-    QMenuBar, QMenu, QFrame, QLabel, QStackedWidget, QScrollArea
+    QMenuBar, QMenu, QFrame, QLabel, QStackedWidget, QScrollArea, QApplication,
+    QDialog,
 )
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QAction
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QAction, QDesktopServices
 from ui.theme_macos import LIGHT_GLASS_QSS, DARK_GLASS_QSS
 from ui.help_dialogs import DocumentationDialog, AboutDialog
 
 from models.app_state import AppState
 from core.services.calculation_worker import CalculationWorker
-from core.services.exporter import DataExporter
+from core.services.exporter import (
+    BatchImageExportResult, DataExporter, available_export_path,
+    selected_export_path,
+)
 from core.exceptions import (
     DbandError, MissingProjectedDOSError, AtomNotFoundError,
     FileTypeError, OrbitalMissingError, VASPKitAtomError,
@@ -31,6 +37,11 @@ from ui.charts.multi_pdos_chart import MultiPDOSChartWidget
 from utils.styling import BTN_RUN_COLOR, BTN_HYB_COLOR
 from utils.helpers import get_app_version
 from ui.control_sizing import ensure_compact_controls_fit_text
+from ui.widgets.image_export_dialog import ImageExportDialog, ImageExportOptions
+from ui.i18n import get_language_manager, localized_stylesheet, tr
+from utils.export_paths import (
+    ensure_export_directory, get_export_directory, remember_export_directory,
+)
 
 
 class MainWindow(QMainWindow):
@@ -40,20 +51,50 @@ class MainWindow(QMainWindow):
         self.resize(1300, 850)
         self.setAcceptDrops(True)
         
+        self.language_manager = get_language_manager()
+        self.language_manager.install(QApplication.instance())
         self.is_dark_mode = False
-        self.setStyleSheet(LIGHT_GLASS_QSS)
+        self.setStyleSheet(localized_stylesheet(LIGHT_GLASS_QSS))
 
         self.state = AppState()
         self._build_ui()
         self._build_menu()
         self._connect_signals()
-        self.statusBar().showMessage("Ready \u2014 drag files here or click Add Files.")
+        self.language_manager.language_changed.connect(self._on_language_changed)
+        self.language_manager.apply(self)
+        self._update_language_button()
+        self.statusBar().showMessage(tr("Ready — drag files here or click Add Files."))
 
     def showEvent(self, event):
         super().showEvent(event)
         # Font metrics can change when the window enters a high-DPI screen.
         ensure_compact_controls_fit_text(self.left_panel)
         self.left_panel.layout().activate()
+
+    def _update_language_button(self):
+        is_chinese = self.language_manager.language == "zh_CN"
+        self.btn_language.setText("EN" if is_chinese else "中文")
+        self.btn_language.setToolTip(
+            "Switch to English" if is_chinese else "切换为中文")
+
+    def _on_language_changed(self, _language):
+        """Refresh visible text and plots without changing analytical state."""
+        base_qss = DARK_GLASS_QSS if self.is_dark_mode else LIGHT_GLASS_QSS
+        self.setStyleSheet(localized_stylesheet(base_qss))
+        self.language_manager.apply(self)
+        self._update_language_button()
+        if self.bar_chart._current_data is not None:
+            self.bar_chart.update_chart(self.bar_chart._current_data)
+        if self.pdos_chart._current_label and self.pdos_chart._current_cache:
+            self.pdos_chart._on_redraw_request()
+        if self.multi_pdos_chart._parsed_cache:
+            self.multi_pdos_chart.draw_plot()
+        if hasattr(self, "_hyb_win") and self._hyb_win:
+            self._hyb_win.set_dark_mode(self.is_dark_mode)
+            self.language_manager.apply(self._hyb_win)
+            if self._hyb_win._cached_data:
+                self._hyb_win._render_plot(*self._hyb_win._cached_data)
+        ensure_compact_controls_fit_text(self.left_panel)
 
     # ---------- drag & drop ----------
     def dragEnterEvent(self, event: QDragEnterEvent):
@@ -96,10 +137,20 @@ class MainWindow(QMainWindow):
         g3.setObjectName("LeftCard")
         l3 = QVBoxLayout(g3)
 
+        heading_row = QHBoxLayout()
+        heading_row.addStretch()
         lbl3 = QLabel("3. Actions")
         lbl3.setAlignment(Qt.AlignCenter)
         lbl3.setStyleSheet("font-weight: bold; font-size: 13px; color: #333333;")
-        l3.addWidget(lbl3)
+        heading_row.addWidget(lbl3)
+        heading_row.addStretch()
+        self.btn_language = QPushButton("中文")
+        self.btn_language.setProperty("_i18n_skip", True)
+        self.btn_language.setFixedWidth(54)
+        self.btn_language.setToolTip("切换为中文 / Switch to English")
+        self.btn_language.clicked.connect(self.language_manager.toggle)
+        heading_row.addWidget(self.btn_language)
+        l3.addLayout(heading_row)
 
         self.btn_run = QPushButton("\u25b6  Run Calculation")
         self.btn_run.setFixedHeight(40)
@@ -111,9 +162,12 @@ class MainWindow(QMainWindow):
         btn_csv = QPushButton("Export CSV")
         btn_csv.clicked.connect(self.export_csv)
         erow.addWidget(btn_csv)
-        btn_png = QPushButton("Save Chart PNG")
-        btn_png.clicked.connect(self.save_chart)
-        erow.addWidget(btn_png)
+        btn_images = QPushButton("Export Images ▾")
+        image_menu = QMenu(btn_images)
+        image_menu.addAction("Save Current Image...", self.save_chart)
+        image_menu.addAction("Batch Export Images...", self.batch_export_images)
+        btn_images.setMenu(image_menu)
+        erow.addWidget(btn_images)
         l3.addLayout(erow)
 
         # Hybridization button
@@ -210,9 +264,13 @@ class MainWindow(QMainWindow):
         act_export.triggered.connect(self.export_csv)
         file_menu.addAction(act_export)
 
-        act_save_chart = QAction("Save Chart PNG...", self)
+        act_save_chart = QAction("Save Current Image...", self)
         act_save_chart.triggered.connect(self.save_chart)
         file_menu.addAction(act_save_chart)
+
+        act_batch_images = QAction("Batch Export Images...", self)
+        act_batch_images.triggered.connect(self.batch_export_images)
+        file_menu.addAction(act_batch_images)
 
         file_menu.addSeparator()
 
@@ -311,10 +369,8 @@ class MainWindow(QMainWindow):
     # ---------- view controls ----------
     def _apply_theme(self, mode):
         self.is_dark_mode = (mode == "dark")
-        if self.is_dark_mode:
-            self.setStyleSheet(DARK_GLASS_QSS)
-        else:
-            self.setStyleSheet(LIGHT_GLASS_QSS)
+        qss = DARK_GLASS_QSS if self.is_dark_mode else LIGHT_GLASS_QSS
+        self.setStyleSheet(localized_stylesheet(qss))
         # Update charts and panels
         for w in [self.bar_chart, self.pdos_chart, self.multi_pdos_chart, 
                   self.file_panel, self.results_table]:
@@ -489,9 +545,9 @@ class MainWindow(QMainWindow):
         """Make old table/plot values visibly stale after a method change."""
         method = self.param_panel.get_integration_method()
         method_name = "Simpson (SciPy)" if method == "simpson" else "Trapezoid (NumPy)"
-        self.statusBar().showMessage(
+        self.statusBar().showMessage(tr(
             f"Integration changed to {method_name}. Run Calculation to refresh all results."
-        )
+        ))
 
     def _on_pdos_system_requested(self, label):
         table = self.results_table.data_table
@@ -502,7 +558,8 @@ class MainWindow(QMainWindow):
                 break
 
     def _on_files_changed(self):
-        self.statusBar().showMessage(f"Loaded {len(self.state.file_entries)} file(s).")
+        self.statusBar().showMessage(tr(
+            f"Loaded {len(self.state.file_entries)} file(s)."))
 
     def _on_clear_all(self):
         self.state.results_data.clear()
@@ -514,7 +571,7 @@ class MainWindow(QMainWindow):
         self.multi_pdos_chart.clear_chart()
         if hasattr(self, '_hyb_win') and self._hyb_win.isVisible():
             self._hyb_win.close()
-        self.statusBar().showMessage("Cleared.")
+        self.statusBar().showMessage(tr("Cleared."))
 
     def _sync_renamed_label(self, old_label, new_label):
         """Propagate rename through all data and UI."""
@@ -544,7 +601,7 @@ class MainWindow(QMainWindow):
     def _calculation_status_text(current, total, method):
         """Human-readable provenance for a live calculation task."""
         method_name = "Simpson (SciPy)" if method == "simpson" else "Trapezoid (NumPy)"
-        return f"Calculating {current}/{total} file(s) using {method_name}..."
+        return tr(f"Calculating {current}/{total} file(s) using {method_name}...")
 
     def run_calculation(self):
         if not self.state.file_entries:
@@ -585,7 +642,7 @@ class MainWindow(QMainWindow):
 
         total = len(self.state.file_entries)
         self._progress = QProgressDialog(
-            "Calculating d-band centers...", "Cancel", 0, total, self)
+            tr("Calculating d-band centers..."), tr("Cancel"), 0, total, self)
         self._progress.setWindowTitle("Processing")
         self._progress.setWindowModality(Qt.WindowModal)
         self._progress.setMinimumDuration(0)
@@ -596,7 +653,7 @@ class MainWindow(QMainWindow):
             lambda current, total: self.statusBar().showMessage(
                 self._calculation_status_text(current, total, integration_method)))
         self._worker.file_done.connect(
-            lambda lbl: self._progress.setLabelText(f"Completed: {lbl}"))
+            lambda lbl: self._progress.setLabelText(tr(f"Completed: {lbl}")))
         self._worker.file_error.connect(self._on_worker_file_error)
         self._worker.ef_warning.connect(self._on_ef_warning)
         self._worker.calculation_done.connect(self._on_calculation_done)
@@ -678,28 +735,220 @@ class MainWindow(QMainWindow):
             return
         try:
             DataExporter.export_results_csv(self.state.results_data, path)
-            self.statusBar().showMessage(f"CSV exported \u2192 {path}")
+            self.statusBar().showMessage(tr(f"CSV exported \u2192 {path}"))
             QMessageBox.information(self, "Success", f"Exported to:\n{path}")
         except OSError as e:
             QMessageBox.critical(self, "Export Failed", f"Cannot write CSV:\n{e}")
 
     def save_chart(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Chart", "dband_chart.png",
-                                              "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)")
+        chart_specs = {
+            0: ("dband_center_summary", self.bar_chart.fig,
+                bool(self.state.results_data)),
+            1: (f"{self.pdos_chart._current_label or 'system'}_PDOS",
+                self.pdos_chart.get_figure(),
+                bool(self.pdos_chart._current_label)),
+            2: ("multi_system_PDOS", self.multi_pdos_chart.get_figure(),
+                bool(self.multi_pdos_chart._parsed_cache)),
+        }
+        stem, fig, has_data = chart_specs[self.tabs.currentIndex()]
+        if not has_data:
+            QMessageBox.warning(
+                self, "Nothing to Export",
+                "Generate this chart before exporting it.")
+            return
+
+        try:
+            initial_dir = ensure_export_directory(self.state.file_entries)
+        except OSError as exc:
+            QMessageBox.critical(
+                self, "Export Folder Error",
+                f"Cannot open the preferred export folder:\n{exc}")
+            return
+        initial_path = initial_dir / f"{stem}.png"
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Save Current Image", str(initial_path),
+            "PNG (*.png);;PDF (*.pdf);;SVG (*.svg)")
         if not path:
             return
-        if self.tabs.currentIndex() == 0:
-            fig = self.bar_chart.fig
-            DataExporter.save_figure(fig, path)
-        elif self.tabs.currentIndex() == 1:
-            fig = self.pdos_chart.get_figure()
-            DataExporter.save_figure(fig, path)
-        else:
-            fig = self.multi_pdos_chart.get_figure()
-            DataExporter.save_figure(fig, path)
 
-        self.statusBar().showMessage(f"Chart saved \u2192 {path}")
-        QMessageBox.information(self, "Success", f"Chart saved to:\n{path}")
+        selected_format = next(
+            (name.lower() for name in ("PNG", "PDF", "SVG")
+             if selected_filter.startswith(name)), "png")
+        output_path = selected_export_path(path, selected_format)
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            DataExporter.save_figure(fig, str(output_path))
+        except OSError as exc:
+            QMessageBox.critical(
+                self, "Export Failed", f"Cannot save image:\n{exc}")
+            return
+
+        remember_export_directory(output_path.parent)
+        self.statusBar().showMessage(tr(f"Chart saved \u2192 {output_path}"))
+        QMessageBox.information(
+            self, "Success", f"Chart saved to:\n{output_path}")
+
+    def batch_export_images(self):
+        """Open the batch dialog and export the current visual style as a set."""
+        labels = list(self.state.parsed_cache.keys())
+        has_summary = bool(self.state.results_data and self.bar_chart.fig.axes)
+        has_multi = bool(
+            self.multi_pdos_chart._parsed_cache and
+            self.multi_pdos_chart.fig.axes and
+            self.multi_pdos_chart.data_dlg.combo_systems.get_checked_items())
+        if not labels and not has_summary and not has_multi:
+            QMessageBox.warning(
+                self, "Nothing to Export",
+                "Run a calculation and generate charts before batch exporting.")
+            return
+
+        dialog = ImageExportDialog(
+            labels=labels,
+            initial_directory=get_export_directory(self.state.file_entries),
+            has_summary=has_summary,
+            has_multi=has_multi,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        options = dialog.options()
+
+        try:
+            options.output_directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.critical(
+                self, "Export Failed",
+                f"Cannot create the output folder:\n{exc}")
+            return
+
+        total = (
+            len(options.system_labels) if options.include_individual_pdos else 0
+        ) + int(options.include_bar_chart) + int(options.include_multi_pdos)
+        progress = QProgressDialog(
+            tr("Preparing image export..."), tr("Cancel"), 0, total, self)
+        progress.setWindowTitle("Batch Export Images")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+
+        def update_progress(done, description):
+            progress.setLabelText(tr(description))
+            progress.setValue(done)
+            QApplication.processEvents()
+
+        result = self._export_batch_images(
+            options,
+            progress_callback=update_progress,
+            is_cancelled=progress.wasCanceled,
+        )
+        progress.setValue(total)
+        progress.close()
+        remember_export_directory(options.output_directory)
+        self._show_batch_export_result(result, options.output_directory)
+
+    def _export_batch_images(self, options: ImageExportOptions,
+                             progress_callback=None, is_cancelled=None):
+        """Export images without changing the user's final visible PDOS view."""
+        result = BatchImageExportResult()
+        progress_callback = progress_callback or (lambda _done, _text: None)
+        is_cancelled = is_cancelled or (lambda: False)
+        output_dir = Path(options.output_directory)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        suffix = f".{options.image_format.lower()}"
+        done = 0
+
+        previous_label = self.pdos_chart._current_label
+        previous_cache = self.pdos_chart._current_cache
+
+        try:
+            if options.include_individual_pdos:
+                for label in options.system_labels:
+                    if is_cancelled():
+                        result.cancelled = True
+                        break
+                    cache_entry = self.state.parsed_cache.get(label)
+                    if cache_entry is None:
+                        result.failures.append(
+                            (label, "Analyzed PDOS data is unavailable."))
+                    else:
+                        try:
+                            self.pdos_chart.draw_pdos(label, cache_entry)
+                            output_path = available_export_path(
+                                output_dir, f"{label}_PDOS", suffix)
+                            DataExporter.save_figure(
+                                self.pdos_chart.get_figure(), str(output_path),
+                                dpi=options.dpi)
+                            result.exported.append(str(output_path))
+                        except Exception as exc:
+                            result.failures.append((label, str(exc)))
+                    done += 1
+                    progress_callback(done, f"Exported individual PDOS: {label}")
+        finally:
+            # Batch rendering temporarily visits each system.  Always return
+            # to the exact system the user was editing before export.
+            try:
+                if previous_label and previous_cache is not None:
+                    self.pdos_chart.draw_pdos(previous_label, previous_cache)
+                else:
+                    self.pdos_chart._current_label = None
+                    self.pdos_chart._current_cache = None
+                    self.pdos_chart.fig.clear()
+                    self.pdos_chart.canvas.draw()
+                    self.pdos_chart.update_systems(
+                        list(self.state.parsed_cache.keys()))
+            except Exception as exc:
+                result.failures.append(("Restore PDOS view", str(exc)))
+
+        summary_tasks = (
+            ("D-band center summary", options.include_bar_chart,
+             self.bar_chart.fig, "dband_center_summary"),
+            ("Multi-system PDOS", options.include_multi_pdos,
+             self.multi_pdos_chart.get_figure(), "multi_system_PDOS"),
+        )
+        for title, included, figure, stem in summary_tasks:
+            if not included or result.cancelled:
+                continue
+            if is_cancelled():
+                result.cancelled = True
+                break
+            try:
+                output_path = available_export_path(output_dir, stem, suffix)
+                DataExporter.save_figure(
+                    figure, str(output_path), dpi=options.dpi)
+                result.exported.append(str(output_path))
+            except Exception as exc:
+                result.failures.append((title, str(exc)))
+            done += 1
+            progress_callback(done, f"Exported: {title}")
+
+        return result
+
+    def _show_batch_export_result(self, result, output_directory):
+        count = len(result.exported)
+        failure_count = len(result.failures)
+        status = "cancelled" if result.cancelled else "completed"
+        self.statusBar().showMessage(tr(
+            f"Batch export {status} — {count} saved, {failure_count} failed."))
+
+        box = QMessageBox(self)
+        box.setWindowTitle("Batch Export Images")
+        box.setIcon(
+            QMessageBox.Warning if failure_count else QMessageBox.Information)
+        box.setText(
+            f"Batch export {status}.\n\n"
+            f"Saved: {count}\nFailed: {failure_count}\n"
+            f"Folder: {output_directory}")
+        if result.failures:
+            box.setDetailedText("\n".join(
+                f"{name}: {message}" for name, message in result.failures))
+        open_button = None
+        if count:
+            open_button = box.addButton(
+                "Open Export Folder", QMessageBox.ActionRole)
+        box.addButton(QMessageBox.Close)
+        box.exec()
+        if open_button is not None and box.clickedButton() is open_button:
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(output_directory)))
 
     # ---------- Help controls ----------
     def _open_documentation(self):

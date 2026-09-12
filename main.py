@@ -69,11 +69,14 @@ def main():
 
     # QApplication must be created before any QWidget
     app = QApplication(sys.argv)
+    from ui.i18n import get_language_manager, localized_stylesheet, tr
+    language_manager = get_language_manager()
+    language_manager.install(app)
     
     # Set modern base style and apply macOS QSS
     app.setStyle("Fusion")
     from ui.theme_macos import LIGHT_GLASS_QSS
-    app.setStyleSheet(LIGHT_GLASS_QSS)
+    app.setStyleSheet(localized_stylesheet(LIGHT_GLASS_QSS))
     
     # Set application icon (warn if missing, but don't crash)
     icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.png")
@@ -88,11 +91,11 @@ def main():
     splash = CustomSplashScreen()
     splash.show()
 
-    splash.update_progress(10, "Initializing Matplotlib engine...")
+    splash.update_progress(10, tr("Initializing Matplotlib engine..."))
     init_matplotlib()
     time.sleep(0.4)  # 视觉缓冲
 
-    splash.update_progress(40, "Scanning for external plugins...")
+    splash.update_progress(40, tr("Scanning for external plugins..."))
     from core.plugins import PluginLoader
     loaded = PluginLoader.load_all()
     if loaded:
@@ -100,11 +103,11 @@ def main():
             "Loaded %d plugin(s): %s", len(loaded), ", ".join(loaded))
     time.sleep(0.4)  # 视觉缓冲
 
-    splash.update_progress(70, "Building UI components...")
+    splash.update_progress(70, tr("Building UI components..."))
     win = MainWindow()
     time.sleep(0.4)  # 视觉缓冲
 
-    splash.update_progress(100, "Starting DBand Studio...")
+    splash.update_progress(100, tr("Starting DBand Studio..."))
     # 进度条跑满后稍作停留
     time.sleep(0.4)
 

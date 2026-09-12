@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from ui.widgets.floating_dialog_base import FloatingConfigDialog
+from ui.i18n import combo_value, find_combo_value
 
 class AxesConfigDialog(FloatingConfigDialog):
     """Dialog for advanced matplotlib axes configuration."""
@@ -129,7 +130,7 @@ class AxesConfigDialog(FloatingConfigDialog):
         self.chk_bottom.setChecked(c["spine_bottom"])
         self.chk_left.setChecked(c["spine_left"])
         
-        idx = self.combo_tick_dir.findText(c["tick_dir"])
+        idx = find_combo_value(self.combo_tick_dir, c["tick_dir"])
         if idx >= 0:
             self.combo_tick_dir.setCurrentIndex(idx)
             
@@ -156,6 +157,6 @@ class AxesConfigDialog(FloatingConfigDialog):
             "spine_bottom": self.chk_bottom.isChecked(),
             "spine_bottom": self.chk_bottom.isChecked(),
             "spine_left": self.chk_left.isChecked(),
-            "tick_dir": self.combo_tick_dir.currentText(),
+            "tick_dir": combo_value(self.combo_tick_dir),
             "show_grid": self.chk_grid.isChecked()
         }

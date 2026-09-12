@@ -17,6 +17,22 @@ def test_windows_bundle_keeps_scipy_extension_required_by_simpson():
     assert "binaries=SCIPY_BINARIES" in spec
 
 
+def test_windows_bundle_excludes_only_unversioned_host_icu():
+    """Keep Qt's versioned ICU chain while rejecting an unrelated PATH DLL."""
+    spec = (Path(__file__).parents[1] / "installer" / "dband_studio.spec").read_text(
+        encoding="utf-8"
+    )
+
+    assert "CONFLICTING_HOST_ICU_DLLS" in spec
+    conflict_set = re.search(
+        r"CONFLICTING_HOST_ICU_DLLS\s*=\s*\{([^}]*)\}", spec
+    ).group(1)
+    assert "'icuuc.dll'" in conflict_set
+    assert "'icudt78.dll'" not in conflict_set
+    assert "icudt78.dll" in spec
+    assert "a.binaries = [" in spec
+
+
 def test_runtime_preflight_exercises_simpson_and_vasprun_dependencies():
     """Release validation must load every package needed by the advertised UI."""
     from main import runtime_preflight

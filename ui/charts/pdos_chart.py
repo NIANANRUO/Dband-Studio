@@ -23,6 +23,7 @@ from utils.styling import (
 from utils.helpers import format_orbital_display
 from ui.widgets.axes_config_dialog import AxesConfigDialog
 from ui.charts.pdos_chart_dialogs import PDOSDataDialog, PDOSStyleDialog
+from ui.i18n import combo_value, configure_matplotlib_language, tr
 
 
 def _display_d_orbitals(rho_dict):
@@ -65,6 +66,7 @@ class PDOSChartWidget(QWidget):
         matplotlib.rcParams['ytick.labelsize'] = 10
         matplotlib.rcParams['legend.fontsize'] = 9
         matplotlib.rcParams['figure.constrained_layout.use'] = True
+        configure_matplotlib_language()
         
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -146,7 +148,7 @@ class PDOSChartWidget(QWidget):
         
     def _on_theme_changed(self):
         """Apply predefined color theme."""
-        theme_name = self.style_dlg.combo_theme.currentText()
+        theme_name = combo_value(self.style_dlg.combo_theme)
         colors = THEMES_CONFIG.get("5_color_dos", {}).get(theme_name)
         if colors and len(colors) >= 5:
             for i, orb in enumerate(d_orb_names):
@@ -211,7 +213,7 @@ class PDOSChartWidget(QWidget):
         metadata = cache_entry.get("metadata")
         projected = getattr(metadata, "mode", None) == "noncollinear"
         
-        mode = self.data_dlg.combo_plot_mode.currentText()
+        mode = combo_value(self.data_dlg.combo_plot_mode)
         if not has_spin:
             mode = "Total Only"
             
@@ -228,14 +230,14 @@ class PDOSChartWidget(QWidget):
             self._axes = [ax_tot, ax_up, ax_dn]
             
             self._draw_total(ax_tot, e, rho_up, rho_dn, True)
-            ax_tot.set_title(f"{label} Total PDOS", fontsize=10, loc='left', pad=6)
+            ax_tot.set_title(tr(f"{label} Total PDOS"), fontsize=10, loc='left', pad=6)
             
             self._draw_spin(ax_up, e, rho_up, 1, "εd(up)", True)
-            ax_up.set_title("SAXIS-Projected Up d-DOS" if projected else "Spin-Up d-DOS",
+            ax_up.set_title(tr("SAXIS-Projected Up d-DOS" if projected else "Spin-Up d-DOS"),
                             fontsize=10, loc='left', pad=6)
             
             self._draw_spin(ax_dn, e, rho_dn, 1, "εd(dn)", True)
-            ax_dn.set_title("SAXIS-Projected Down d-DOS" if projected else "Spin-Down d-DOS",
+            ax_dn.set_title(tr("SAXIS-Projected Down d-DOS" if projected else "Spin-Down d-DOS"),
                             fontsize=10, loc='left', pad=6)
             
             # Set common x-label
@@ -250,7 +252,7 @@ class PDOSChartWidget(QWidget):
             ax = self.fig.add_subplot(111)
             self._axes = [ax]
             self._draw_total(ax, e, rho_up, rho_dn, True)
-            ax.set_title(f"{label} Total PDOS", fontsize=10, loc='left', pad=6)
+            ax.set_title(tr(f"{label} Total PDOS"), fontsize=10, loc='left', pad=6)
             ax.set_xlabel("E − E$_{f}$ (eV)")
             ax.set_ylabel("DOS")
             
@@ -259,7 +261,7 @@ class PDOSChartWidget(QWidget):
             self._axes = [ax]
             self._draw_spin(ax, e, rho_up, 1, "εd(up)", True)
             prefix = "SAXIS-Projected Up" if projected else "Spin-Up"
-            ax.set_title(f"{label} {prefix} PDOS", fontsize=10, loc='left', pad=6)
+            ax.set_title(tr(f"{label} {prefix} PDOS"), fontsize=10, loc='left', pad=6)
             ax.set_xlabel("E − E$_{f}$ (eV)")
             ax.set_ylabel("DOS")
             
@@ -268,7 +270,7 @@ class PDOSChartWidget(QWidget):
             self._axes = [ax]
             self._draw_spin(ax, e, rho_dn, 1, "εd(dn)", True)
             prefix = "SAXIS-Projected Down" if projected else "Spin-Down"
-            ax.set_title(f"{label} {prefix} PDOS", fontsize=10, loc='left', pad=6)
+            ax.set_title(tr(f"{label} {prefix} PDOS"), fontsize=10, loc='left', pad=6)
             ax.set_xlabel("E − E$_{f}$ (eV)")
             ax.set_ylabel("DOS")
             
@@ -438,6 +440,7 @@ class PDOSChartWidget(QWidget):
         range_str = getattr(self, '_current_range_name', 'All')
         if range_str.startswith("["):
             range_str = "Custom"
+        range_str = tr(range_str)
             
         c = self.axes_config or {}
         x_min = c.get("x_min")

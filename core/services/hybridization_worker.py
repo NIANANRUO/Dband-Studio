@@ -170,7 +170,11 @@ class HybridizationWorker(QThread):
 
         # Check local cache first
         if cache_key in self._local_cache:
-            return self._local_cache[cache_key]
+            cached = self._local_cache[cache_key]
+            # Alias is presentation metadata, not part of the parsed DOS cache
+            # identity.  Always attach the current value so a renamed fragment
+            # cannot inherit the label from an earlier calculation.
+            return (*cached[:4], alias)
 
         # Check shared cache (AppState.parsed_cache) by label.
         # CRITICAL: the shared cache is keyed by *label*, which the user can
