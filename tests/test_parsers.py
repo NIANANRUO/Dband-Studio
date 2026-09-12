@@ -1149,6 +1149,22 @@ class TestMemoryAwareLRU:
         size = MemoryAwareLRUCache._estimate_size({"energy": arr})
         assert size == 8000  # 1000 * 8 bytes
 
+    def test_removal_keeps_memory_accounting(self):
+        from models.app_state import MemoryAwareLRUCache
+
+        cache = MemoryAwareLRUCache(max_memory_mb=1)
+        for key in ("a", "b", "c"):
+            cache[key] = np.zeros(10, dtype=np.float64)
+        assert cache.popitem(last=False)[0] == "a"
+        assert cache._current_memory == 160
+        assert cache.popitem()[0] == "c"
+        assert cache._current_memory == 80
+        assert cache.pop("b").nbytes == 80
+        assert cache._current_memory == 0
+        assert cache._sizes == {}
+        with pytest.raises(KeyError):
+            cache.popitem()
+
 
 # ── HybridizationWorker cache-key isolation ─────────────────────────
 

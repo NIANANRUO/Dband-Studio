@@ -46,10 +46,7 @@ class MemoryAwareLRUCache(OrderedDict):
         self._current_memory += estimated_size
         
         while self._current_memory > self.max_memory and len(self) > 1:
-            k, _ = self.popitem(last=False)
-            self._current_memory -= self._sizes.pop(k, 0)
-            if self._current_memory < 0:
-                self._current_memory = 0
+            self.popitem(last=False)
 
     def __getitem__(self, key: str) -> Any:
         value = super().__getitem__(key)
@@ -69,12 +66,21 @@ class MemoryAwareLRUCache(OrderedDict):
 
     def pop(self, key, default=None):
         if key in self:
-            val = super().pop(key)
-            self._current_memory -= self._sizes.pop(key, 0)
-            if self._current_memory < 0:
-                self._current_memory = 0
+            val = super().__getitem__(key)
+            self.__delitem__(key)
             return val
-        return super().pop(key, default)
+        return default
+
+    def popitem(self, last=True):
+        # Python 3.10's OrderedDict.popitem can call our __getitem__ after
+        # unlinking the key, making its LRU move_to_end fail. Read and delete
+        # explicitly so ordering and memory accounting stay consistent.
+        if not self:
+            raise KeyError("dictionary is empty")
+        key = next(reversed(self) if last else iter(self))
+        value = super().__getitem__(key)
+        self.__delitem__(key)
+        return key, value
 
     @staticmethod
     def _estimate_size(value: Any) -> int:
