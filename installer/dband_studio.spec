@@ -59,6 +59,10 @@ a = Analysis(
         'matplotlib.backends.backend_qtagg',
         'matplotlib.backends.backend_qt5agg',
         'matplotlib.backends.qt_compat',
+        # File exports load their backends dynamically via savefig.
+        'matplotlib.backends.backend_svg',
+        'matplotlib.backends.backend_pdf',
+        'matplotlib.backends.backend_ps',
         # numpy — C extensions
         'numpy.core._methods',
         'numpy.lib.format',
