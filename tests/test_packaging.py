@@ -65,3 +65,10 @@ def test_wheel_configuration_includes_gui_entry_module():
     root = Path(__file__).resolve().parents[1]
     config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
     assert "main" in config["tool"]["setuptools"]["py-modules"]
+
+
+def test_source_version_is_not_shadowed_by_stale_installed_metadata(monkeypatch):
+    from importlib import metadata
+    from utils.helpers import get_app_version
+    monkeypatch.setattr(metadata, 'version', lambda _name: '1.2.2')
+    assert get_app_version() == '1.3.0'

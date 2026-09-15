@@ -10,23 +10,14 @@ def get_app_version() -> str:
     """Return the application version from a single source of truth.
 
     Resolution order:
-        1. ``importlib.metadata`` if the package is installed.
-        2. ``pyproject.toml`` ``[project].version`` field (dev mode).
+        1. Bundled or source ``pyproject.toml`` ``[project].version``.
+        2. ``importlib.metadata`` when no project metadata is present.
         3. Hard-coded fallback ``"1.0.0"``.
 
     All display surfaces (splash, about dialog, main window title) MUST
     call this function instead of hard-coding a version string.
     """
-    try:
-        from importlib.metadata import version, PackageNotFoundError
-        try:
-            return version("dband-studio")
-        except PackageNotFoundError:
-            pass
-    except ImportError:
-        pass
-
-    # Dev mode: parse pyproject.toml directly (no third-party dep required).
+    # Source and frozen builds use their own bundled version, not stale installed metadata.
     try:
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         toml_path = os.path.join(root, "pyproject.toml")
@@ -39,6 +30,16 @@ def get_app_version() -> str:
                         return line.split("=", 1)[1].strip().strip('"').strip("'")
     except Exception:
         pass
+
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            return version("dband-studio")
+        except PackageNotFoundError:
+            pass
+    except ImportError:
+        pass
+
 
     return "1.0.0"
 

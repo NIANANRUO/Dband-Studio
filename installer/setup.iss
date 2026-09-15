@@ -1,9 +1,9 @@
 ; Inno Setup script for DBand Studio
 ; Build: ISCC.exe installer/setup.iss
-; Output: dist/DBandStudio_Setup_v1.2.2.exe
+; Output: dist/DBandStudio_Setup_v1.3.0.exe
 
 #define AppName       "DBand Studio"
-#define AppVersion    "1.2.2"
+#define AppVersion    "1.3.0"
 #define AppPublisher  "D-Band Center Analyzer"
 #define AppURL        ""
 #define AppExeName    "DBandStudio.exe"
@@ -20,9 +20,10 @@ AppUpdatesURL={#AppURL}
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 AllowNoIcons=yes
+PrivilegesRequiredOverridesAllowed=commandline
 OutputDir=..\dist
 OutputBaseFilename=DBandStudio_Setup_v{#AppVersion}
-Compression=lzma2/ultra64
+Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName={#AppName}

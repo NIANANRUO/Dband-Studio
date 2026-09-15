@@ -63,6 +63,11 @@ def runtime_preflight():
 
 
 def main():
+    if "--release-smoke-test" in sys.argv:
+        from utils.release_check import run_release_check
+        index = sys.argv.index("--release-smoke-test")
+        return run_release_check(sys.argv[index + 1])
+
     if "--runtime-self-check" in sys.argv:
         runtime_preflight()
         return 0

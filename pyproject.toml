@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta:__legacy__"
 
 [project]
 name = "dband-studio"
-version = "1.2.2"
+version = "1.3.0"
 description = "DBand Studio — VASP DFT calculation data processing tool for d-band center analysis"
 readme = "README.md"
 license = {text = "MIT"}
